@@ -1,0 +1,173 @@
+{
+  "project": {
+    "name": "three-span-beam",
+    "force": "KN",
+    "dist": "M",
+    "heat": "KJ",
+    "temp_unit": "C",
+    "styp": "1",
+    "smas": "1",
+    "grav": "9.806",
+    "temper": "0",
+    "compat": false,
+    "outdir": "",
+    "alt_mct": false,
+    "resdir": ""
+  },
+  "nodes": [
+    {
+      "x": "0",
+      "y": "0",
+      "z": "0",
+      "note": ""
+    },
+    {
+      "x": "20",
+      "y": "0",
+      "z": "0",
+      "note": ""
+    },
+    {
+      "x": "50",
+      "y": "0",
+      "z": "0",
+      "note": ""
+    },
+    {
+      "x": "80",
+      "y": "0",
+      "z": "0",
+      "note": ""
+    }
+  ],
+  "elements": [
+    {
+      "type": "BEAM",
+      "i": "1",
+      "j": "2",
+      "mat": "1",
+      "sect": "1",
+      "angle": "0"
+    },
+    {
+      "type": "BEAM",
+      "i": "2",
+      "j": "3",
+      "mat": "1",
+      "sect": "1",
+      "angle": "0"
+    },
+    {
+      "type": "BEAM",
+      "i": "3",
+      "j": "4",
+      "mat": "1",
+      "sect": "1",
+      "angle": "0"
+    }
+  ],
+  "materials": [
+    {
+      "name": "C50",
+      "type": "CONC",
+      "mode": "spec",
+      "spec": "C50",
+      "standard": "JTG3362-18(RC)",
+      "dbname": "C50",
+      "elast": "3.45e7",
+      "poisn": "0.2",
+      "den": "25",
+      "thermal": "0.00001"
+    }
+  ],
+  "sections": [
+    {
+      "name": "SEC1",
+      "shape": "SB",
+      "dims": [
+        "2.0",
+        "1.5"
+      ],
+      "offset": "CC",
+      "shear": "YES",
+      "warp": "NO",
+      "file": "",
+      "unit": "0.001",
+      "props": null
+    }
+  ],
+  "supports": [
+    {
+      "nodes": "1",
+      "dx": true,
+      "dy": true,
+      "dz": true,
+      "rx": false,
+      "ry": false,
+      "rz": false,
+      "group": ""
+    },
+    {
+      "nodes": "4",
+      "dx": true,
+      "dy": true,
+      "dz": true,
+      "rx": false,
+      "ry": false,
+      "rz": false,
+      "group": ""
+    }
+  ],
+  "loadcases": [
+    {
+      "name": "DL",
+      "type": "D",
+      "desc": ""
+    },
+    {
+      "name": "LL",
+      "type": "L",
+      "desc": ""
+    }
+  ],
+  "selfweight": {
+    "on": true,
+    "lc": "DL",
+    "x": "0",
+    "y": "0",
+    "z": "-1",
+    "group": ""
+  },
+  "nodalloads": [
+    {
+      "lc": "LL",
+      "node": "2",
+      "fx": "0",
+      "fy": "0",
+      "fz": "-100",
+      "mx": "0",
+      "my": "0",
+      "mz": "0",
+      "group": ""
+    }
+  ],
+  "beamloads": [
+    {
+      "lc": "DL",
+      "elems": "1",
+      "cmd": "BEAM",
+      "type": "UNILOAD",
+      "dir": "GZ",
+      "proj": "NO",
+      "d1": "0",
+      "p1": "-25",
+      "d2": "1",
+      "p2": "-25",
+      "d3": "0",
+      "p3": "0",
+      "d4": "0",
+      "p4": "0",
+      "group": ""
+    }
+  ]
+}

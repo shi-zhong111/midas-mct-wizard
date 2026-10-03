@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.9", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # No dependency install step: the program is standard library only.
+      - name: Show interpreter and confirm tkinter is present
+        run: |
+          python --version
+          python -c "import tkinter; print('tkinter', tkinter.TkVersion)"
+
+      - name: Byte-compile
+        run: python -m compileall -q midas_wizard.py tests
+
+      - name: Unit tests (pytest if available, otherwise unittest)
+        run: python -m unittest discover -s tests -v
+
+      - name: Built-in self test
+        run: python midas_wizard.py --selftest
+
+      - name: CLI smoke test
+        run: |
+          python midas_wizard.py --version
+          python midas_wizard.py --emit-mct examples/three-span-beam.json

@@ -1,0 +1,59 @@
+# ---- runtime output (the wizard creates these next to itself) ----
+models/
+pythonw_path.txt
+错误日志.txt
+*.log
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ---- test / coverage ----
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# ---- virtualenvs ----
+.venv/
+venv/
+ENV/
+env/
+
+# ---- editors / OS ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- build artefacts from scripts/build_portable.ps1 ----
+portable/
+*.exe
+!scripts/*.exe

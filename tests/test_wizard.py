@@ -1,0 +1,360 @@
+# -*- coding: utf-8 -*-
+"""midas_wizard 的单元测试。
+
+只测纯函数（不启动 Tk、不连 MIDAS、不写工程目录），所以 Windows / Linux / macOS
+和 CI 上都能跑：
+
+    python -m unittest discover -s tests -v
+    python midas_wizard.py --selftest      # 同一批断言的轻量版
+
+重点覆盖「算错了但看起来正常」的那几处：截面特性、扭转常数、工况名一致性、
+非有限数输入。
+"""
+import math
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import midas_wizard as mw   # noqa: E402
+
+
+def box_loops(b, h, t):
+    """外轮廓 b×h、壁厚 t 的矩形管（两根闭合环）。"""
+    outer = [[0, 0], [b, 0], [b, h], [0, h]]
+    inner = [[t, t], [b - t, t], [b - t, h - t], [t, h - t]]
+    return [outer, inner]
+
+
+class TestNumbers(unittest.TestCase):
+    def test_is_num_rejects_non_finite(self):
+        for bad in ("nan", "inf", "-inf", "1e999", "", "  ", "abc", None):
+            self.assertFalse(mw.is_num(bad), "is_num(%r) 应为 False" % (bad,))
+
+    def test_is_num_accepts_numbers(self):
+        for good in ("0", "1", "-2.5", " 3 ", "1e-5", "+7"):
+            self.assertTrue(mw.is_num(good), "is_num(%r) 应为 True" % (good,))
+
+    def test_num_never_raises(self):
+        """nan/1e999 以前会在 int() 那一步抛 OverflowError，而 pythonw 下看不到报错。"""
+        self.assertEqual(mw.num("nan"), "0")
+        self.assertEqual(mw.num("1e999"), "0")
+        self.assertEqual(mw.num(None), "0")
+        self.assertEqual(mw.num("abc"), "0")
+
+    def test_num_formatting(self):
+        self.assertEqual(mw.num("2.0"), "2")
+        self.assertEqual(mw.num("-3.50"), "-3.5")
+        self.assertEqual(mw.num(0), "0")
+
+    def test_numg_significant_digits(self):
+        self.assertEqual(mw.numg(0.39612500000000017), "0.396125")
+        self.assertEqual(mw.numg(None), "0")
+
+
+class TestNaming(unittest.TestCase):
+    def test_aname_strips_non_ascii(self):
+        """MCT 非注释行不接受非 ASCII；校验器承诺会换成 MAT1/SEC1，得真的做到。"""
+        self.assertEqual(mw.aname("主梁", "SEC1"), "SEC1")
+        self.assertEqual(mw.aname("GIRDER"), "GIRDER")
+        self.assertEqual(mw.aname("", "MAT1"), "MAT1")
+
+    def test_aname_removes_separators(self):
+        self.assertNotIn(",", mw.aname("a,b"))
+        self.assertNotIn("\n", mw.aname("a\nb"))
+        self.assertEqual(mw.aname("a  b"), "a b")
+
+    def test_aascii_for_groups(self):
+        self.assertEqual(mw.aascii("中支座"), "")
+        self.assertEqual(mw.aascii("GRP-A"), "GRP-A")
+
+
+class TestSectionProps(unittest.TestCase):
+    def test_solid_square(self):
+        p = mw.compute_section_props([[[0, 0], [2, 0], [2, 2], [0, 2]]])
+        self.assertAlmostEqual(p["A"], 4.0, places=9)
+        self.assertAlmostEqual(p["Iyy"], 4.0 / 3.0, places=9)
+        self.assertAlmostEqual(p["Izz"], 4.0 / 3.0, places=9)
+
+    def test_rectangle_axes(self):
+        # 宽 b=4 (along y), 高 h=2 (along z): Iyy = b*h^3/12, Izz = h*b^3/12
+        p = mw.compute_section_props([[[0, 0], [4, 0], [4, 2], [0, 2]]])
+        self.assertAlmostEqual(p["A"], 8.0, places=9)
+        self.assertAlmostEqual(p["Iyy"], 4 * 2 ** 3 / 12.0, places=9)
+        self.assertAlmostEqual(p["Izz"], 2 * 4 ** 3 / 12.0, places=9)
+        self.assertAlmostEqual(p["Cy"], 2.0, places=9)
+        self.assertAlmostEqual(p["Cz"], 1.0, places=9)
+
+    def test_hollow_box_matches_bredt(self):
+        """薄壁矩形管的自由扭转常数有解析解 t(b-t)³(h-t)³/((b-t)+(h-t))。
+
+        旧版本对空心截面套实心近似 A⁴/(40·Ip)，这个工况下会低估 200 倍以上。
+        """
+        b, h, t = 2.0, 1.5, 0.05
+        a_m = (b - t) * (h - t)
+        s_m = 2.0 * ((b - t) + (h - t))
+        want = 4.0 * a_m * a_m * t / s_m
+        p = mw.compute_section_props(box_loops(b, h, t))
+        self.assertAlmostEqual(p["A"], b * h - (b - 2 * t) * (h - 2 * t), places=9)
+        self.assertLess(abs(p["Ixx"] - want) / want, 0.06,
+                        "J=%.5f vs thin-wall %.5f" % (p["Ixx"], want))
+
+        # and it must not fall back to the old solid approximation (200x off here)
+        ip = p["Iyy"] + p["Izz"]
+        self.assertGreater(p["Ixx"], (p["A"] ** 4) / (40.0 * ip) * 50,
+                           "torsion constant regressed to the solid approximation")
+
+    def test_hollow_box_area_and_inertia(self):
+        p = mw.compute_section_props(box_loops(2.0, 1.5, 0.1))
+        outer_a = 2.0 * 1.5
+        inner_a = 1.8 * 1.3
+        self.assertAlmostEqual(p["A"], outer_a - inner_a, places=9)
+        self.assertAlmostEqual(p["Iyy"], (2.0 * 1.5 ** 3 - 1.8 * 1.3 ** 3) / 12.0, places=9)
+
+    def test_shear_areas_present(self):
+        """*SECTION VALUE 那一路要读 ASy/ASz；以前没有这两个键，写出去是 0。"""
+        p = mw.compute_section_props([[[0, 0], [2, 0], [2, 2], [0, 2]]])
+        self.assertIn("ASy", p)
+        self.assertIn("ASz", p)
+        self.assertGreater(p["ASy"], 0)
+
+    def test_orientation_invariance(self):
+        # same loops traversed the other way round, and with a rotated start point
+        base = box_loops(2.0, 1.5, 0.2)
+        ref = mw.compute_section_props(base)
+        both_ccw = mw.compute_section_props([list(base[0]), list(base[1])])
+        both_cw = mw.compute_section_props([base[0][::-1], base[1][::-1]])
+        rotated = mw.compute_section_props([[base[0][2], base[0][3], base[0][0], base[0][1]], base[1]])
+        for got in (both_ccw, both_cw, rotated):
+            self.assertAlmostEqual(got["A"], ref["A"], places=9)
+            self.assertAlmostEqual(got["Iyy"], ref["Iyy"], places=9)
+            self.assertAlmostEqual(got["Izz"], ref["Izz"], places=9)
+            self.assertAlmostEqual(got["Ixx"], ref["Ixx"], places=9)
+    def test_far_from_origin(self):
+        """CAD 里截面常画在离原点很远的地方；结果不能被大坐标抹平。"""
+        far = mw.compute_section_props([[[317321, 0], [317323, 0], [317323, 2], [317321, 2]]])
+        self.assertAlmostEqual(far["A"], 4.0, places=6)
+        self.assertAlmostEqual(far["Iyy"], 4.0 / 3.0, places=6)
+
+    def test_degenerate_returns_none(self):
+        self.assertIsNone(mw.compute_section_props([]))
+        self.assertIsNone(mw.compute_section_props([[[0, 0], [1, 0]]]))
+        self.assertIsNone(mw.compute_section_props([[[0, 0], [1, 0], [2, 0]]]))
+
+    def test_unit_scaling_hint(self):
+        """面积离谱时要能反推出图纸单位选错了。"""
+        sec = {"unit": "0.001", "props": {"A": 1.35e6}}
+        self.assertTrue(mw.suggest_unit(sec))
+        self.assertTrue(mw.unit_advice(sec))
+
+
+class TestBuildMct(unittest.TestCase):
+    def setUp(self):
+        m = mw.default_model()
+        m["selfweight"]["lc"] = m["loadcases"][0]["name"]
+        m["beamloads"][0]["lc"] = m["loadcases"][0]["name"]
+        self.model = m
+
+    def test_no_non_ascii_in_code_lines(self):
+        body = "\n".join(l for l in mw.build_mct(self.model).splitlines()
+                         if not l.lstrip().startswith(";"))
+        bad = sorted({c for c in body if ord(c) > 127})
+        self.assertEqual(bad, [], "MCT 非注释行出现非 ASCII：%r" % bad)
+
+    def test_ends_with_enddata(self):
+        self.assertIn("*ENDDATA", mw.build_mct(self.model))
+
+    def test_loadcase_names_match_between_stldcase_and_use_stld(self):
+        """*STLDCASE 与 *USE-STLD 必须写同一个名字，否则 MIDAS 找不到工况、荷载全丢。"""
+        m = mw.default_model()
+        m["loadcases"] = [{"name": "恒载,1", "type": "D", "desc": ""}]
+        m["beamloads"][0]["lc"] = "恒载,1"
+        m["selfweight"] = {"on": False, "lc": "", "x": "0", "y": "0", "z": "-1", "group": ""}
+        text = mw.build_mct(m)
+        declared, in_case = [], False
+        for line in text.splitlines():
+            if line.startswith("*"):
+                in_case = line.startswith("*STLDCASE")
+                continue
+            if in_case and line.startswith("   "):
+                declared.append(line.split(",")[0].strip())
+        used = [l.split(",", 1)[1].strip() for l in text.splitlines() if l.startswith("*USE-STLD,")]
+        self.assertTrue(declared)
+        self.assertTrue(used)
+        for name in used:
+            self.assertIn(name, declared)
+
+    def test_compat_unit_has_two_fields(self):
+        """Civil 2022 的 *UNIT 只有力/长度两个字段。"""
+        self.model["project"]["compat"] = True
+        line = [l for l in mw.build_mct(self.model).splitlines()
+                if l.startswith("   ") and "KN" in l][0]
+        self.assertEqual(len(line.split(",")), 2)
+
+    def test_nx_unit_has_four_fields(self):
+        line = [l for l in mw.build_mct(self.model).splitlines()
+                if l.startswith("   ") and "KN" in l][0]
+        self.assertEqual(len(line.split(",")), 4)
+
+    def test_section_writer_emits_shear_areas(self):
+        """CAD 数值截面那一路必须写出非 0 的 ASy/ASz。"""
+        m = mw.default_model()
+        m["sections"] = [{"name": "BOX", "shape": "CAD", "dims": [], "offset": "CC",
+                          "shear": "YES", "warp": "NO", "file": "x.dxf", "unit": "0.001",
+                          "props": mw.compute_section_props(box_loops(2.0, 1.5, 0.1))}]
+        m["elements"][0]["sect"] = "1"
+        text = mw.build_mct(m)
+        self.assertIn("*SECT-PSCVALUE", text)
+        # second row is AREA, ASy, ASz, Ixx, Iyy, Izz -- shear areas must not be 0
+        area_line = [l for l in text.splitlines()
+                     if l.startswith("        ") and l.count(",") == 5][0]
+        area, asy, asz = [float(x) for x in area_line.split(",")[:3]]
+        self.assertAlmostEqual(area, 0.66, places=6)
+        self.assertGreater(asy, 0.0, "ASy written as 0")
+        self.assertGreater(asz, 0.0, "ASz written as 0")
+
+    def test_group_names_are_ascii(self):
+        m = mw.default_model()
+        m["supports"][0]["group"] = "中支座"
+        m["selfweight"]["lc"] = m["loadcases"][0]["name"]
+        body = "\n".join(l for l in mw.build_mct(m).splitlines()
+                         if not l.lstrip().startswith(";"))
+        self.assertNotIn("中支座", body)
+
+
+class TestValidation(unittest.TestCase):
+    def test_default_model_is_valid(self):
+        m = mw.default_model()
+        m["selfweight"]["lc"] = m["loadcases"][0]["name"]
+        for step in ("nodes", "elements", "materials", "sections", "supports", "loadcases", "loads"):
+            self.assertEqual(mw.issues_for(step, m), [], "默认模型在第 %s 步就有问题" % step)
+
+    def test_sec_assign_out_of_range_is_caught(self):
+        """分段表以前完全不校验，能写出引用不存在截面的 *ELEMENT。"""
+        m = mw.default_model()
+        m["sec_assign"] = [{"from": "1", "to": "999", "sect": "99"}]
+        self.assertTrue(mw.issues_for("sections", m))
+
+    def test_sec_assign_reversed_range_is_caught(self):
+        m = mw.default_model()
+        m["sec_assign"] = [{"from": "3", "to": "1", "sect": "1"}]
+        self.assertTrue(mw.issues_for("sections", m))
+
+    def test_sec_assign_valid_is_clean(self):
+        m = mw.default_model()
+        m["sec_assign"] = [{"from": "1", "to": "1", "sect": "1"}]
+        self.assertEqual(mw.issues_for("sections", m), [])
+
+    def test_nan_node_is_caught(self):
+        m = mw.default_model()
+        m["nodes"] = [{"x": "nan", "y": "0", "z": "0", "note": ""}]
+        self.assertTrue(mw.issues_for("nodes", m))
+
+    def test_duplicate_loadcase_name_is_caught(self):
+        m = mw.default_model()
+        m["loadcases"] = [{"name": "DL", "type": "D", "desc": ""},
+                          {"name": "DL", "type": "L", "desc": ""}]
+        self.assertTrue(mw.issues_for("loadcases", m))
+
+    def test_missing_loadcase_reference_is_caught(self):
+        m = mw.default_model()
+        m["beamloads"][0]["lc"] = "NOPE"
+        self.assertTrue(mw.issues_for("loads", m))
+
+
+class TestModelSchema(unittest.TestCase):
+    def test_ensure_model_fills_missing_keys(self):
+        m = mw.ensure_model({"nodes": [{"x": "1", "y": "0", "z": "0", "note": ""}]})
+        for key in ("project", "nodes", "elements", "materials", "sections",
+                    "supports", "loadcases", "selfweight", "beamloads"):
+            self.assertIn(key, m)
+
+    def test_ensure_model_keeps_old_extra_keys(self):
+        """旧工程 JSON 里有已经不用的键（如 resdir），不能因此读不了。"""
+        m = mw.ensure_model({"nodes": [], "project": {"name": "old", "resdir": "x"}})
+        self.assertEqual(m["project"]["name"], "old")
+
+    def test_ensure_model_handles_garbage(self):
+        for junk in (None, [], "x", 42):
+            m = mw.ensure_model(junk)
+            self.assertIn("project", m)
+
+    def test_partial_model_can_be_rendered_to_mct(self):
+        self.assertTrue(mw.build_mct(mw.ensure_model({"nodes": []})))
+
+    def test_data_report_survives_tapered_section(self):
+        """build_data_report 以前引用未定义的 out，会 NameError。"""
+        m = mw.default_model()
+        m["sections"] = [{"name": "S1", "shape": "SB", "dims": ["1", "1"], "offset": "CC",
+                          "shear": "YES", "warp": "NO", "file": "", "unit": "0.001", "props": None},
+                         {"name": "TS1", "shape": "TS", "dims": [], "offset": "CC",
+                          "shear": "YES", "warp": "NO", "file": "", "unit": "0.001", "props": None,
+                          "i_sect": "1", "j_sect": "2"}]
+        self.assertTrue(mw.build_data_report(m))
+
+
+class TestDxfReading(unittest.TestCase):
+    def _write(self, body):
+        import tempfile
+        fd, path = tempfile.mkstemp(suffix=".dxf")
+        os.close(fd)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        self.addCleanup(os.remove, path)
+        return path
+
+    def test_lwpolyline_closed(self):
+        dxf = ("0\nSECTION\n2\nENTITIES\n"
+               "0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n"
+               "10\n0\n20\n0\n10\n2\n20\n0\n10\n2\n20\n2\n10\n0\n20\n2\n"
+               "0\nENDSEC\n0\nEOF\n")
+        loops, notes = mw.read_dxf_loops(self._write(dxf))
+        self.assertEqual(len(loops), 1)
+
+    def test_classic_polyline_vertex_records(self):
+        """经典 DXF 把顶点放在后面的 VERTEX 实体里 —— 以前整条轮廓会被丢掉。"""
+        pts = [(0, 0), (3, 0), (3, 3), (0, 3)]
+        body = "0\nSECTION\n2\nENTITIES\n0\nPOLYLINE\n8\n0\n66\n1\n70\n1\n"
+        for x, y in pts:
+            body += "0\nVERTEX\n8\n0\n10\n%g\n20\n%g\n" % (x, y)
+        body += "0\nSEQEND\n8\n0\n0\nENDSEC\n0\nEOF\n"
+        loops, notes = mw.read_dxf_loops(self._write(body))
+        self.assertEqual(len(loops), 1, "经典 POLYLINE 没被读出来；notes=%s" % notes)
+        p = mw.compute_section_props(loops)
+        self.assertAlmostEqual(p["A"], 9.0, places=6)
+
+    def test_circle(self):
+        dxf = ("0\nSECTION\n2\nENTITIES\n"
+               "0\nCIRCLE\n8\n0\n10\n0\n20\n0\n40\n500\n"
+               "0\nENDSEC\n0\nEOF\n")
+        loops, _ = mw.read_dxf_loops(self._write(dxf), unit_scale=0.001)
+        p = mw.compute_section_props(loops)
+        # the circle is tessellated into a polygon, so its area is slightly under pi*r^2
+        self.assertLess(abs(p["A"] - math.pi * 0.5 ** 2) / (math.pi * 0.25), 0.002)
+
+    def test_missing_file_reports_error(self):
+        loops, notes = mw.read_dxf_loops(os.path.join(os.path.dirname(__file__), "nope.dxf"))
+        self.assertEqual(loops, [])
+        self.assertTrue(notes)
+
+    def test_shipped_sample(self):
+        """仓库里带的示例箱形截面：A=1.35 m²，Iyy/Izz 与手算一致。"""
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "examples", "box-2000x1500.dxf")
+        if not os.path.isfile(path):
+            self.skipTest("示例 DXF 不在")
+        loops, _ = mw.read_dxf_loops(path, unit_scale=0.001)
+        p = mw.compute_section_props(loops)
+        self.assertAlmostEqual(p["A"], 1.35, places=6)
+        self.assertAlmostEqual(p["Iyy"], 0.396125, places=6)
+        self.assertAlmostEqual(p["Izz"], 0.690625, places=6)
+
+
+class TestSelftest(unittest.TestCase):
+    def test_selftest_passes(self):
+        self.assertEqual(mw.selftest(verbose=False), 0)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
