@@ -47,7 +47,7 @@
 
 ### 工程化
 
-- 新增 42 个单元测试 + 内置 `--selftest` + 三平台 CI。
+- 新增 43 个单元测试（含一个「没有 winreg 也能 import」的跨平台测试）+ 内置 `--selftest` + 三平台 CI。
 - 新增命令行入口：`--version` / `--selftest` / `--emit-mct`（可无界面批量转换）。
 - 新增 README、MIT LICENSE、.gitignore、CHANGELOG。
 - 文件名改为 ASCII；模块可在 Linux/macOS 上 `import`（`winreg` 改为按需导入）。
