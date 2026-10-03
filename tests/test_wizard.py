@@ -142,6 +142,26 @@ class TestSectionProps(unittest.TestCase):
         self.assertIsNone(mw.compute_section_props([[[0, 0], [1, 0]]]))
         self.assertIsNone(mw.compute_section_props([[[0, 0], [1, 0], [2, 0]]]))
 
+    def test_absurd_coordinates_fail_cleanly(self):
+        """1e308 这种坐标以前在 _perimeter() 里抛 OverflowError。
+
+        OverflowError 不是 ValueError，接不住，界面上只会显示一句看不懂的报错。
+        现在应当在算几何之前就判失败、返回 None（界面提示"解析不出来"）。
+        """
+        for lp in ([[1e308, 1e308], [-1e308, 0.0], [0.0, -1e308]],
+                   [[float("nan"), 0], [1, 0], [1, 1]],
+                   [[float("inf"), 0], [1, 0], [1, 1]],
+                   [[1e160, 0], [1e160 + 2, 0], [1e160 + 2, 2]]):
+            self.assertIsNone(mw.compute_section_props([lp]), "应返回 None：%r" % (lp,))
+
+    def test_large_but_sane_coordinates_still_work(self):
+        """正常的"画在图纸中间"（几万~几十万）不能受上面那条影响。"""
+        for base in (317321, 1e6, 1e8):
+            lp = [[base, base], [base + 2, base], [base + 2, base + 2], [base, base + 2]]
+            p = mw.compute_section_props([lp])
+            self.assertIsNotNone(p, "坐标 %g 应该能算出来" % base)
+            self.assertAlmostEqual(p["A"], 4.0, places=4)
+
     def test_unit_scaling_hint(self):
         """面积离谱时要能反推出图纸单位选错了。"""
         sec = {"unit": "0.001", "props": {"A": 1.35e6}}
@@ -279,6 +299,30 @@ class TestModelSchema(unittest.TestCase):
         for junk in (None, [], "x", 42):
             m = mw.ensure_model(junk)
             self.assertIn("project", m)
+
+    def test_ensure_model_drops_non_dict_rows(self):
+        """列表里混进 null / 数字 / 字符串时，必须把它们剔掉。
+
+        以前只保证顶层键和"是个列表"，行本身没管；之后任何 row.get()
+        都直接 AttributeError —— 正是 ensure_model 本来要防的那类崩溃。
+        """
+        m = mw.ensure_model({"nodes": [None, 5, "x", {"x": "1", "y": "0", "z": "0"}]})
+        self.assertEqual(len(m["nodes"]), 1)
+        self.assertIsInstance(m["nodes"][0], dict)
+        # 然后必须真的能跑通
+        self.assertTrue(mw.build_mct(m))
+        self.assertTrue(mw.build_data_report(m))
+        self.assertTrue(mw.all_issues(m) is not None)
+
+    def test_ensure_model_drops_non_dict_rows_in_every_list(self):
+        junk = {k: [None, 7, "s", {}] for k in
+                ("nodes", "elements", "materials", "sections", "supports",
+                 "loadcases", "nodalloads", "beamloads")}
+        m = mw.ensure_model(junk)
+        for k in junk:
+            for row in m[k]:
+                self.assertIsInstance(row, dict, "%s 里混进了非字典行" % k)
+        self.assertTrue(mw.build_mct(m))
 
     def test_partial_model_can_be_rendered_to_mct(self):
         self.assertTrue(mw.build_mct(mw.ensure_model({"nodes": []})))

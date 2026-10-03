@@ -1,4 +1,4 @@
-# midas-mct-wizard · MIDAS Civil NX 建模向导
+﻿# midas-mct-wizard · MIDAS Civil NX 建模向导
 
 一个不用学 MIDAS 就能建桥梁模型的桌面小工具。按 8 个步骤填表，
 最后生成一个 `.mct` 命令文件，在 MIDAS Civil NX 里
@@ -117,7 +117,7 @@ midas-mct-wizard/
 │   ├─ custom-section.mct       自定义（DXF）截面示例
 │   └─ box-2000x1500.dxf        示例箱形截面图纸
 ├─ tests/
-│   ├─ test_wizard.py           43 个单元测试（标准库 unittest）
+│   ├─ test_wizard.py           47 个单元测试（标准库 unittest）
 │   └─ test_cross_platform.py   验证没有 winreg 也能 import（CI 跑 Linux/macOS）
 ├─ LICENSE                      MIT
 └─ .github/workflows/ci.yml     CI：3 个平台 × 3 个 Python 版本

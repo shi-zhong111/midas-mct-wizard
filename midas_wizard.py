@@ -273,6 +273,12 @@ def ensure_model(data):
     m = default_model()
     if not isinstance(data, dict):
         return m
+    # 每一行还必须是 dict：手改坏的 JSON 里可能是 null / 数字 / 字符串，
+    # 光把列表补出来不够，访问 row.get() 一样会 AttributeError。
+    for key, dflt in m.items():
+        if isinstance(dflt, list) and isinstance(data.get(key), list):
+            data = dict(data)
+            data[key] = [row for row in data[key] if isinstance(row, dict)]
     for key, dflt in m.items():
         if key not in data:
             continue
@@ -662,6 +668,17 @@ def compute_section_props(loops):
     loops = [[[float(p[0]), float(p[1])] for p in lp] for lp in loops if len(lp) >= 3]
     if not loops:
         return None
+    # 坐标本身是 nan / inf，或者跨度大到乘平方就溢出的（1e308 这种），直接判失败。
+    # 必须先拦：后面 _perimeter() 里的 (dx)**2 会抛 OverflowError，
+    # 那不是 ValueError，一路穿到界面上只会显示一句看不懂的报错。
+    for lp in loops:
+        for p in lp:
+            if not (math.isfinite(p[0]) and math.isfinite(p[1])):
+                return None
+    _span = max(max(p[0] for p in lp) - min(p[0] for p in lp) for lp in loops)
+    _span = max(_span, max(max(p[1] for p in lp) - min(p[1] for p in lp) for lp in loops))
+    if not math.isfinite(_span) or _span > 1e150:
+        return None
     # 去掉相邻重复点（含首尾重复）与面积可忽略的退化环
     clean = []
     for lp in loops:
@@ -708,7 +725,7 @@ def compute_section_props(loops):
             zs.extend(p[1] for p in lp)
         else:
             peri_in += _perimeter(lp)
-    if A <= 1e-12:
+    if A <= 1e-12 or not all(math.isfinite(v) for v in (A, Sy, Sz, Iyy, Izz)):
         return None
 
     cy = Sy / A

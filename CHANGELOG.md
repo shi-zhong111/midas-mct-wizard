@@ -1,4 +1,4 @@
-# 更新记录
+﻿# 更新记录
 
 ## 1.0.0
 
@@ -47,11 +47,21 @@
 
 ### 工程化
 
-- 新增 43 个单元测试（含一个「没有 winreg 也能 import」的跨平台测试）+ 内置 `--selftest` + 三平台 CI。
+- 新增 47 个单元测试（含一个「没有 winreg 也能 import」的跨平台测试）+ 内置 `--selftest` + 三平台 CI。
 - 新增命令行入口：`--version` / `--selftest` / `--emit-mct`（可无界面批量转换）。
 - 新增 README、MIT LICENSE、.gitignore、CHANGELOG。
 - 文件名改为 ASCII；模块可在 Linux/macOS 上 `import`（`winreg` 改为按需导入）。
 - 示例数据从运行时目录 `模型文件/` 移到 `examples/`，示例工程改用 ASCII 标识符。
+
+### 健壮性（模糊测试发现）
+
+- **超大坐标让截面解析抛 `OverflowError`**：坐标达到 `1e308` 量级时，
+  `_perimeter()` 里的 `dx**2` 会溢出，而 `OverflowError` 不是 `ValueError`、
+  接不住，界面上只会弹一句看不懂的报错。现在在算几何之前就检查坐标是否有限、
+  跨度是否过大，判失败返回 `None`（正常的"画在图纸中间"几万~几十万不受影响）。
+- **`ensure_model()` 只补了列表、没管行**：手改坏的 JSON 里如果有 `null` /
+  数字 / 字符串混在列表中，之后任何 `row.get()` 都会 `AttributeError` ——
+  正是这个函数本来要防的那类崩溃。现在非字典行会被直接剔除。
 
 ### 已知限制
 
