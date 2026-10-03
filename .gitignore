@@ -4,6 +4,9 @@ pythonw_path.txt
 错误日志.txt
 *.log
 
+# ---- local-only handover note (not part of the published repo) ----
+推送说明_本地留存.md
+
 # ---- Python ----
 __pycache__/
 *.py[cod]
