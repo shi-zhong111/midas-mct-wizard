@@ -10,6 +10,7 @@ the registry probe cannot run.
 a FRESH interpreter, because an already-imported module stays cached.
 """
 import os
+import re
 import subprocess
 import sys
 import unittest
@@ -65,10 +66,18 @@ class TestRunsWithoutWinreg(unittest.TestCase):
         self.assertEqual(proc.returncode, 0,
                          "module failed without winreg:\n%s\n%s" % (proc.stdout, proc.stderr))
         self.assertIn("import OK", proc.stdout)
-        # midas_status must degrade gracefully, not raise
-        self.assertIn("midas_status (False, None)", proc.stdout)
         self.assertIn("find_midas_exe", proc.stdout)
         self.assertIn("selftest 0", proc.stdout)
+        # No winreg means the API connection info is simply unavailable. This must
+        # be a clean None, not an exception. Do NOT assert the running flag: it
+        # comes from tasklist and depends on whether MIDAS happens to be open, so
+        # pinning it makes the test flap on a developer machine.
+        self.assertIn("read_api_conn None", proc.stdout)
+        m = re.search(r"midas_status \(([^)]*)\)", proc.stdout)
+        self.assertIsNotNone(m, "midas_status did not report a tuple: %r" % proc.stdout)
+        running, info = [p.strip() for p in m.group(1).split(",", 1)]
+        self.assertIn(running, ("True", "False"), "running flag must be a bool")
+        self.assertEqual(info, "None", "without winreg there must be no connection info")
 
 
 if __name__ == "__main__":

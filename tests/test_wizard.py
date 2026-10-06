@@ -217,6 +217,58 @@ class TestBuildMct(unittest.TestCase):
                 if l.startswith("   ") and "KN" in l][0]
         self.assertEqual(len(line.split(",")), 4)
 
+    def _material_line(self, model):
+        return [l for l in mw.build_mct(model).splitlines()
+                if l.startswith("   1, ") and (", CONC," in l or ", STEEL," in l)][0]
+
+    def test_material_line_field_positions(self):
+        """*MATERIAL 的字段顺序必须和 MIDAS 一致。
+
+        出过一次真实事故：PLAST 的空字段被省掉，整行往前串一位，MIDAS 连报
+        三个错——TUNIT 收到 C、bMASS 收到 NO、DAMPRATIO 收到 0.05：
+            「TUNIT值有错误」/「必须输入是或否」/「整数值错误」
+        期望顺序：iMAT, TYPE, MNAME, SPHEAT, HEATCO, PLAST, TUNIT, bMASS, DAMPRATIO
+        """
+        line = self._material_line(self.model)
+        f = [p.strip() for p in line.split(",")]
+        self.assertEqual(f[0], "1", "iMAT")
+        self.assertEqual(f[1], "CONC", "TYPE")
+        self.assertEqual(f[2], "C50", "MNAME")
+        self.assertEqual(f[3], "0", "SPHEAT")
+        self.assertEqual(f[4], "0", "HEATCO")
+        self.assertEqual(f[5], "", "PLAST 必须是空字段")
+        self.assertEqual(f[6], "C", "TUNIT")
+        self.assertEqual(f[7], "NO", "bMASS")
+        self.assertEqual(f[8], "0.05", "DAMPRATIO")
+
+    def test_material_line_matches_verified_export(self):
+        """这一行是照 MIDAS 自己导出、且导入实测通过的原文写的，不能改。"""
+        verified = "   1, CONC, C50, 0, 0, , C, NO, 0.05, 2, 34500000, 0.2, 1e-05, 25, 0"
+        self.assertEqual(self._material_line(self.model), verified)
+
+    def test_material_db_mode_field_positions(self):
+        """规范数据库模式（DATA1 mode=1）同样不能错位。"""
+        m = mw.default_model()
+        m["materials"][0].update({"mode": "db", "standard": "JTG3362-18(RC)", "dbname": "C50"})
+        f = [p.strip() for p in self._material_line(m).split(",")]
+        self.assertEqual(f[5], "", "PLAST 必须是空字段")
+        self.assertEqual(f[6], "C", "TUNIT")
+        self.assertEqual(f[7], "NO", "bMASS")
+        self.assertEqual(f[8], "0.05", "DAMPRATIO")
+        self.assertEqual(f[9], "1", "DATA1 mode=1 表示走数据库")
+        self.assertEqual(f[10], "JTG3362-18(RC)", "STANDARD")
+        self.assertEqual(f[12], "C50", "DB name")
+
+    def test_compat_material_has_no_dampratio(self):
+        """Civil 2022 没有 DAMPRATIO，但 PLAST 的空字段仍然要在。"""
+        m = mw.default_model()
+        m["project"]["compat"] = True
+        f = [p.strip() for p in self._material_line(m).split(",")]
+        self.assertEqual(f[5], "", "PLAST 必须是空字段")
+        self.assertEqual(f[6], "C", "TUNIT")
+        self.assertEqual(f[7], "NO", "bMASS")
+        self.assertEqual(f[8], "2", "compat 下第 9 位直接是 DATA1 mode")
+
     def test_section_writer_emits_shear_areas(self):
         """CAD 数值截面那一路必须写出非 0 的 ASy/ASz。"""
         m = mw.default_model()

@@ -1089,8 +1089,13 @@ def build_mct(m):
         for i, mat in enumerate(m["materials"], start=1):
             head = "   %d, %s, %s, 0, 0, " % (i, mat.get("type", "CONC"),
                                               aname(mat.get("name"), "MAT%d" % i))
+            # PLAST 必须占一个空字段（就是这里两个逗号之间什么都不写）！
+            # 少了它整行会往前串一位，MIDAS 会连报三个错：
+            #   「TUNIT值有错误」「必须输入是或否」「整数值错误」
+            # 因为 TUNIT 收到了 C、bMASS 收到了 NO、DAMPRATIO 收到了 0.05。
+            # 这个空字段照抄自 MIDAS Civil NX 自己导出的原文（见 examples/）。
             # Civil 2022 及更早没有 DAMPRATIO 字段；NX 才有，默认阻尼比 0.05。
-            tail_head = head + ("C, NO, " if compat else "C, NO, 0.05, ")
+            tail_head = head + (", C, NO, " if compat else ", C, NO, 0.05, ")
             if mat.get("mode") == "db":
                 add(tail_head + "1, %s, , %s, NO, 0" % (txt(mat.get("standard")), txt(mat.get("dbname"))))
             else:
