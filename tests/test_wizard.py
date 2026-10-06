@@ -54,18 +54,30 @@ class TestNumbers(unittest.TestCase):
 
 
 class TestNaming(unittest.TestCase):
-    def test_aname_strips_non_ascii(self):
-        """MCT 非注释行不接受非 ASCII；校验器承诺会换成 MAT1/SEC1，得真的做到。"""
-        self.assertEqual(mw.aname("主梁", "SEC1"), "SEC1")
+    def test_aname_keeps_non_ascii(self):
+        """中文名要原样保留 —— 实测 MIDAS 能导入中文名。
+
+        早先的版本把非 ASCII 全删掉，用户填「自重」「二期」会被抹成兜底名 LC，
+        几个工况撞成同一个名字，荷载被合并。那是错的。
+        """
+        self.assertEqual(mw.aname("主梁"), "主梁")
+        self.assertEqual(mw.aname("自重"), "自重")
         self.assertEqual(mw.aname("GIRDER"), "GIRDER")
+        self.assertEqual(mw.aname(" 二期 "), "二期")
+
+    def test_aname_falls_back_when_empty(self):
         self.assertEqual(mw.aname("", "MAT1"), "MAT1")
+        self.assertEqual(mw.aname("   ", "SEC2"), "SEC2")
 
     def test_aname_removes_separators(self):
+        """逗号必须清掉：MCT 用逗号分隔字段，名称里带逗号会让整行错列。"""
         self.assertNotIn(",", mw.aname("a,b"))
         self.assertNotIn("\n", mw.aname("a\nb"))
+        self.assertNotIn("\t", mw.aname("a\tb"))
         self.assertEqual(mw.aname("a  b"), "a b")
 
     def test_aascii_for_groups(self):
+        """边界组名仍然清非 ASCII —— 作者实测组名带中文会让整份导入失败。"""
         self.assertEqual(mw.aascii("中支座"), "")
         self.assertEqual(mw.aascii("GRP-A"), "GRP-A")
 
@@ -176,11 +188,25 @@ class TestBuildMct(unittest.TestCase):
         m["beamloads"][0]["lc"] = m["loadcases"][0]["name"]
         self.model = m
 
-    def test_no_non_ascii_in_code_lines(self):
-        body = "\n".join(l for l in mw.build_mct(self.model).splitlines()
-                         if not l.lstrip().startswith(";"))
-        bad = sorted({c for c in body if ord(c) > 127})
-        self.assertEqual(bad, [], "MCT 非注释行出现非 ASCII：%r" % bad)
+    def test_chinese_names_survive_to_the_mct(self):
+        """给中文工况名/材料名/截面名，写出去必须还是中文，不能被抹掉或撞车。"""
+        m = mw.default_model()
+        m["loadcases"] = [{"name": "自重", "type": "D", "desc": "自身重力"},
+                          {"name": "二期", "type": "L", "desc": "二期恒载"}]
+        m["materials"][0]["name"] = "混凝土"
+        m["sections"][0]["name"] = "主梁"
+        m["selfweight"] = {"on": True, "lc": "自重", "x": "0", "y": "0", "z": "-1", "group": ""}
+        m["beamloads"][0]["lc"] = "二期"
+        text = mw.build_mct(m)
+        self.assertIn("自重", text)
+        self.assertIn("二期", text)
+        self.assertIn("混凝土", text)
+        self.assertIn("主梁", text)
+        # 两个工况必须各写一行、各挂各的荷载
+        self.assertIn("*USE-STLD, 自重", text)
+        self.assertIn("*USE-STLD, 二期", text)
+        # 不能再退回兜底名
+        self.assertNotIn(", LC,", text)
 
     def test_ends_with_enddata(self):
         self.assertIn("*ENDDATA", mw.build_mct(self.model))
@@ -287,6 +313,7 @@ class TestBuildMct(unittest.TestCase):
         self.assertGreater(asz, 0.0, "ASz written as 0")
 
     def test_group_names_are_ascii(self):
+        """边界组名是唯一的例外：作者实测组名带中文会让整份导入失败，所以清掉。"""
         m = mw.default_model()
         m["supports"][0]["group"] = "中支座"
         m["selfweight"]["lc"] = m["loadcases"][0]["name"]
@@ -308,22 +335,45 @@ class TestValidation(unittest.TestCase):
         m["sec_assign"] = [{"from": "1", "to": "999", "sect": "99"}]
         self.assertTrue(mw.issues_for("sections", m))
 
-    def test_two_chinese_loadcase_names_are_caught(self):
-        """两个中文工况名会清洗成同一个兜底名 LC，MIDAS 只保留后一个。
+    def test_two_chinese_loadcase_names_are_allowed(self):
+        """两个不同的中文工况名是合法的 —— 名称原样写进 MCT，不会撞车。
 
-        真实事故：用户把工况命名为「自重」「二期」，两个都变成 LC，
-        导入时 MIDAS 报「数据 *STLDCASE 被修改」——一个工况被悄悄覆盖了。
-        必须在生成前拦住，而不是写出一个看起来正常、实际丢数据的文件。
+        这里曾经拦过：早先版本把中文名清洗成兜底名 LC，两个工况撞成一个，
+        MIDAS 报「数据 *STLDCASE 被修改」并合并荷载。修法是**保留中文名**，
+        而不是让用户改名。
         """
         m = mw.default_model()
         m["loadcases"] = [{"name": "自重", "type": "D", "desc": ""},
                           {"name": "二期", "type": "L", "desc": ""}]
+        m["beamloads"][0]["lc"] = "二期"
+        m["selfweight"] = {"on": True, "lc": "自重", "x": "0", "y": "0", "z": "-1", "group": ""}
+        self.assertEqual(mw.issues_for("loadcases", m), [])
+        text = mw.build_mct(m)
+        self.assertIn("*USE-STLD, 自重", text)
+        self.assertIn("*USE-STLD, 二期", text)
+
+    def test_duplicate_chinese_loadcase_names_still_caught(self):
+        """真正重名（一个字都不差）仍然要拦。"""
+        m = mw.default_model()
+        m["loadcases"] = [{"name": "自重", "type": "D", "desc": ""},
+                          {"name": "自重", "type": "L", "desc": ""}]
+        self.assertTrue(mw.issues_for("loadcases", m))
+
+    def test_comma_in_name_is_caught(self):
+        """名称里带逗号会让 MCT 整行错列，必须拦。"""
+        m = mw.default_model()
+        m["loadcases"] = [{"name": "恒载,1", "type": "D", "desc": ""}]
         issues = mw.issues_for("loadcases", m)
-        self.assertTrue(issues, "两个中文工况名撞车必须报错")
-        joined = " ".join(issues)
-        self.assertIn("自重", joined)
-        self.assertIn("二期", joined)
-        self.assertIn("LC", joined)
+        self.assertTrue(issues)
+        self.assertIn("逗号", " ".join(issues))
+
+    def test_comma_in_material_and_section_name_is_caught(self):
+        m = mw.default_model()
+        m["materials"][0]["name"] = "C50,高强"
+        self.assertTrue(mw.issues_for("materials", m))
+        m2 = mw.default_model()
+        m2["sections"][0]["name"] = "主梁,加宽"
+        self.assertTrue(mw.issues_for("sections", m2))
 
     def test_distinct_ascii_loadcase_names_stay_clean(self):
         m = mw.default_model()
@@ -333,21 +383,13 @@ class TestValidation(unittest.TestCase):
         m["selfweight"]["lc"] = "DL"
         self.assertEqual(mw.issues_for("loadcases", m), [])
 
-    def test_one_chinese_loadcase_is_allowed(self):
-        """只有一个中文名时不会撞车，不该拦 —— 已实测中文名能导入。"""
-        m = mw.default_model()
-        m["loadcases"] = [{"name": "自重", "type": "D", "desc": ""}]
-        m["beamloads"][0]["lc"] = "自重"
-        m["selfweight"]["lc"] = "自重"
-        self.assertEqual(mw.issues_for("loadcases", m), [])
-
-    def test_chinese_material_names_colliding_are_caught(self):
+    def test_chinese_material_names_are_allowed(self):
         m = mw.default_model()
         m["materials"] = [{"name": "混凝土", "type": "CONC", "mode": "user", "spec": "自定义",
                            "elast": "3e7", "poisn": "0.2", "den": "25", "thermal": "1e-5"},
                           {"name": "钢材", "type": "STEEL", "mode": "user", "spec": "自定义",
                            "elast": "2e8", "poisn": "0.3", "den": "76.98", "thermal": "1.2e-5"}]
-        self.assertTrue(mw.issues_for("materials", m))
+        self.assertEqual(mw.issues_for("materials", m), [])
 
     def test_sec_assign_reversed_range_is_caught(self):
         m = mw.default_model()

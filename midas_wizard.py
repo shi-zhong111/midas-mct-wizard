@@ -239,11 +239,17 @@ def aascii(v, fallback=""):
 
 
 def aname(v, fallback=""):
-    """MCT 非注释行里的名称一律转成 ASCII —— 出现非 ASCII 会让 MIDAS 整份放弃导入（实测）。
+    """MCT 里写名称用：只清掉会破坏字段结构的东西，中文原样保留。
 
-    中文名改用 fallback（MAT1 / SEC1 这类），并保证结果非空且不含逗号。
+    必须清掉的只有「逗号」——MCT 用逗号分隔字段，名称里带逗号会让整行错列；
+    换行/制表符同理。**非 ASCII（中文）不用清**：作者实测中文名能正常导入
+    （仓库里 examples/custom-section.mct 的截面名就是「主梁」，导入通过）。
+    MCT 文件按 GBK 写出去，中文能正常显示。
+
+    早先的版本会把非 ASCII 全部删掉，结果是用户填「自重」「二期」这种中文工况名
+    全被抹成兜底名，几个工况撞成同一个 —— 那是错的，已经改回来。
     """
-    return _squash("".join(ch for ch in txt(v) if ord(ch) < 128)) or fallback
+    return _squash(txt(v)) or fallback
 
 
 STYPE_NAMES = {"0": "三维 (3D)", "1": "二维 X-Z 平面", "2": "二维 Y-Z 平面", "3": "二维 X-Y 平面", "4": "三维 (Z 向旋转约束)"}
@@ -1353,7 +1359,6 @@ def issues_for(step_id, m):
     nn = len(m["nodes"])
     if step_id == "loadcases":
         _seen = {}
-        _ascii_map = {}
         if not m["loadcases"]:
             out.append("至少需要一个荷载工况。")
         for _i, _lc in enumerate(m["loadcases"], start=1):
@@ -1364,21 +1369,11 @@ def issues_for(step_id, m):
                 out.append("工况名「%s」重复了（第 %d 个和第 %d 个）。MIDAS 不允许重名，请改成不同的名字。" % (_nm, _seen[_nm], _i))
             else:
                 _seen[_nm] = _i
-            # 写进 MCT 的是 ASCII 化之后的名字：中文名会被去掉、退回 LC 这类兜底名。
-            # 两个不同中文名可能清洗成同一个名字（「自重」「二期」都会变成 LC），
-            # MIDAS 就会把后一个覆盖掉，只给一句「*STLDCASE 被修改」的警告 ——
-            # 所以这里必须按"清洗之后"的名字再查一次重名。
-            _asc = aname(_nm, "LC") if _nm else ""
-            if _asc:
-                if _asc in _ascii_map and _ascii_map[_asc][1] != _nm:
-                    out.append(
-                        "第 %d、%d 个工况名「%s」「%s」里的中文会被去掉，两个都变成「%s」，"
-                        "MIDAS 会把后一个覆盖掉、荷载全挤进同一个工况。"
-                        "请在「工况名称」那一列改成不同的英文名或拼音"
-                        "（例如 自重→SW、二期→SDL、人群→LL）。"
-                        % (_ascii_map[_asc][0], _i, _ascii_map[_asc][1], _nm, _asc))
-                else:
-                    _ascii_map[_asc] = (_i, _nm)
+            # 中文名原样写进 MCT（实测可导入），所以这里只按原名查重就够了。
+            # 但名称里不能有逗号：MCT 用逗号分字段，带了会让整行错列。
+            if _nm and "," in _nm:
+                out.append("工况名「%s」里有逗号。MCT 用逗号分隔字段，写出去会让整行错位 —— "
+                           "请把逗号改成空格或其他字符。" % _nm)
         for _i, _b in enumerate(m["beamloads"], start=1):
             _lc = txt(_b.get("lc")).strip()
             if not _lc:
@@ -1452,33 +1447,15 @@ def issues_for(step_id, m):
                 out.append("材料 %d 的泊松比应在 0 ~ 0.5 之间。" % _i)
             if is_num(_mat.get("den")) and float(_mat["den"]) <= 0:
                 out.append("材料 %d 的容重应大于 0。" % _i)
-        # 材料名同样会 ASCII 化，两个中文名可能撞成同一个 MAT1/MAT2 之外的兜底名
-        _mat_asc = {}
-        for _i, _mat in enumerate(m["materials"], start=1):
+            # 材料名原样写出去（中文可导入），只挡逗号
             _nm = txt(_mat.get("name")).strip()
-            _asc = aname(_nm, "MAT%d" % _i) if _nm else ""
-            if _asc and _asc in _mat_asc and _mat_asc[_asc][1] != _nm:
-                out.append("材料名「%s」和「%s」清洗后都会变成「%s」，MIDAS 会覆盖掉一个。"
-                           "请改成不同的英文名。" % (_mat_asc[_asc][1], _nm, _asc))
-            elif _asc:
-                _mat_asc[_asc] = (_i, _nm)
+            if _nm and "," in _nm:
+                out.append("材料名「%s」里有逗号，会让 MCT 整行错位，请改掉。" % _nm)
     if step_id == "sections":
-        _sec_asc = {}
         for _i, _sec in enumerate(m["sections"], start=1):
             _nm = txt(_sec.get("name")).strip()
-            _asc = aname(_nm, "SEC%d" % _i) if _nm else ""
-            if _asc and _asc in _sec_asc and _sec_asc[_asc][1] != _nm:
-                out.append("截面名「%s」和「%s」清洗后都会变成「%s」，MIDAS 会覆盖掉一个。"
-                           "请改成不同的英文名。" % (_sec_asc[_asc][1], _nm, _asc))
-            elif _asc:
-                _sec_asc[_asc] = (_i, _nm)
-    if step_id in ("loadcases", "materials", "sections"):
-        _cn = [txt(_x.get("name")) for _x in (m["loadcases"] if step_id == "loadcases" else
-               (m["materials"] if step_id == "materials" else m["sections"]))]
-        _cn = [x for x in _cn if x.strip() and any(ord(c) > 127 for c in x)]
-        if _cn:
-            out.append("名称里有中文（%s）。MCT 的非注释行不允许非 ASCII 字符，生成时会换成 "
-                       "MAT1/SEC1/LC 这类英文名——想保留可读名字请改用英文或拼音。" % "、".join(_cn[:3]))
+            if _nm and "," in _nm:
+                out.append("截面名「%s」里有逗号，会让 MCT 整行错位，请改掉。" % _nm)
     if step_id == "nodes":
         if nn == 0:
             out.append("至少需要一个支点。")
@@ -3245,9 +3222,11 @@ def selftest(verbose=True):
     check("is_num 拒绝 nan/inf/空", not is_num("nan") and not is_num("1e999") and not is_num(""))
     check("num 把非法值写成 0", num("nan") == "0" and num("abc") == "0" and num("2.5") == "2.5")
 
-    # 2) 名称清洗：MCT 的非注释行不能有非 ASCII
-    check("aname 去除非 ASCII", aname("主梁", "SEC1") == "SEC1")
+    # 2) 名称处理：中文原样保留（实测能导入），只清掉会破坏字段的逗号
+    check("aname 保留中文", aname("主梁", "SEC1") == "主梁")
     check("aname 去掉逗号", "," not in aname("a,b"))
+    check("aname 空值用兜底名", aname("", "LC") == "LC")
+    check("aascii 仍然只用于边界组名", aascii("中支座") == "")
 
     # 3) 截面特性：已知解析解
     square = compute_section_props([[[0, 0], [2, 0], [2, 2], [0, 2]]])
@@ -3267,8 +3246,21 @@ def selftest(verbose=True):
     m["beamloads"][0]["lc"] = m["loadcases"][0]["name"]
     text = build_mct(m)
     body = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith(";"))
-    check("MCT 非注释行无非 ASCII", all(ord(c) < 128 for c in body))
+    check("MCT 非注释行没有逗号错位", all(l.count(",") >= 1 for l in body.splitlines() if l.startswith("   ")))
     check("MCT 有 *ENDDATA", "*ENDDATA" in text)
+
+    # 4b) 中文名必须原样保留 —— 实测 MIDAS 认中文，不能给抹掉
+    m_cn = default_model()
+    m_cn["loadcases"] = [{"name": "自重", "type": "D", "desc": "自身重力"},
+                         {"name": "二期", "type": "L", "desc": ""}]
+    m_cn["materials"][0]["name"] = "混凝土"
+    m_cn["sections"][0]["name"] = "主梁"
+    m_cn["selfweight"] = {"on": True, "lc": "自重", "x": "0", "y": "0", "z": "-1", "group": ""}
+    m_cn["beamloads"][0]["lc"] = "二期"
+    cn_text = build_mct(m_cn)
+    check("中文工况名原样写出", "自重" in cn_text and "二期" in cn_text)
+    check("两个中文工况名不再撞车", cn_text.count("LC,") == 0 and cn_text.count("*USE-STLD, 自重") == 1)
+    check("中文材料名/截面名原样写出", "混凝土" in cn_text and "主梁" in cn_text)
 
     # 5) 工况名一致：*STLDCASE 写什么，*USE-STLD 就得引用什么
     m2 = default_model()

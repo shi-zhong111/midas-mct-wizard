@@ -82,7 +82,7 @@
   ],
   "sections": [
     {
-      "name": "SEC1",
+      "name": "主梁",
       "shape": "SB",
       "dims": [
         "2.0",
@@ -120,19 +120,19 @@
   ],
   "loadcases": [
     {
-      "name": "DL",
+      "name": "自重",
       "type": "D",
       "desc": ""
     },
     {
-      "name": "LL",
+      "name": "二期",
       "type": "L",
       "desc": ""
     }
   ],
   "selfweight": {
     "on": true,
-    "lc": "DL",
+    "lc": "自重",
     "x": "0",
     "y": "0",
     "z": "-1",
@@ -140,7 +140,7 @@
   },
   "nodalloads": [
     {
-      "lc": "LL",
+      "lc": "二期",
       "node": "2",
       "fx": "0",
       "fy": "0",
@@ -153,7 +153,7 @@
   ],
   "beamloads": [
     {
-      "lc": "DL",
+      "lc": "自重",
       "elems": "1",
       "cmd": "BEAM",
       "type": "UNILOAD",

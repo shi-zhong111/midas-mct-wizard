@@ -1,6 +1,6 @@
 ; ================================================================
 ; MIDAS Civil NX — MCT 命令文件
-; 由「MIDAS 建模向导」生成  2026-10-03 12:49:10
+; 由「MIDAS 建模向导」生成  2026-10-06 13:38:33
 ; 项目名称：three-span-beam
 ; 导入：MIDAS Civil NX → 文件 → 导入 → MCT 命令文件
 ; ================================================================
@@ -16,7 +16,7 @@
 *MATERIAL    ; Material
 ; iMAT, TYPE, MNAME, SPHEAT, HEATCO, PLAST, TUNIT, bMASS, DAMPRATIO, [DATA1]
 ; [DATA1] : 1, STANDARD, CODE, DB, USEELAST, ELAST  /  2, ELAST, POISN, THERMAL, DEN, MASS
-   1, CONC, C50, 0, 0, C, NO, 0.05, 2, 34500000, 0.2, 1e-05, 25, 0
+   1, CONC, C50, 0, 0, , C, NO, 0.05, 2, 34500000, 0.2, 1e-05, 25, 0
 
 *SECTION    ; Section Properties
 ; iSEC, TYPE, SNAME, [OFFSET], bSD, bWE, SHAPE, [DATA1], [DATA2]      ; 1st line - DB/USER
@@ -24,7 +24,7 @@
 ;       AREA, ASy, ASz, Ixx, Iyy, Izz                                 ; 2nd line
 ;       CyP, CyM, CzP, CzM, QyB, QzB, PERI_OUT, PERI_IN, Cy, Cz       ; 3rd line
 ;       Y1, Y2, Y3, Y4, Z1, Z2, Z3, Z4                                ; 4th line
-   1, DBUSER, SEC1, CC, 0, 0, 0, 0, 0, 0, YES, NO, SB, 2, 2, 1.5, 0, 0, 0, 0, 0, 0, 0, 0
+   1, DBUSER, 主梁, CC, 0, 0, 0, 0, 0, 0, YES, NO, SB, 2, 2, 1.5, 0, 0, 0, 0, 0, 0, 0, 0
 
 *NODE    ; Nodes
 ; iNO, X, Y, Z
@@ -46,20 +46,20 @@
 
 *STLDCASE    ; Static Load Cases
 ; LCNAME, LCTYPE, DESC
-   DL, D, 
-   LL, L, 
+   自重, D, 
+   二期, L, 
 
-*USE-STLD, DL
+*USE-STLD, 自重
 ; *SELFWEIGHT, X, Y, Z, GROUP
 *SELFWEIGHT    ; Self Weight
    0, 0, -1, 
 
-*USE-STLD, LL
+*USE-STLD, 二期
 *CONLOAD    ; Nodal Loads
 ; NODE_LIST, FX, FY, FZ, MX, MY, MZ, GROUP
    2, 0, 0, -100, 0, 0, 0, 
 
-*USE-STLD, DL
+*USE-STLD, 自重
 *BEAMLOAD    ; Element Beam Loads
 ; ELEM_LIST, CMD, TYPE, DIR, bPROJ, D1, P1, D2, P2, D3, P3, D4, P4, GROUP
    1, BEAM, UNILOAD, GZ, NO, NO, LY, , , , 0, -25, 1, -25, 0, 0, 0, 0, , NO, 0, 0, NO, , 0, NO
