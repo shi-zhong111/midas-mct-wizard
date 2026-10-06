@@ -4,6 +4,7 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
@@ -23,16 +24,28 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # Ubuntu runners do not ship tkinter with every Python build. The program
+      # imports tkinter at module level, so the pure-function tests cannot even
+      # load without it. Harmless no-op on Windows/macOS.
+      - name: Ensure tkinter is available (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-tk
+
       # No dependency install step: the program is standard library only.
       - name: Show interpreter and confirm tkinter is present
         run: |
           python --version
           python -c "import tkinter; print('tkinter', tkinter.TkVersion)"
 
+      # Explicit file list: `compileall -q midas_wizard.py tests` is fine, but
+      # naming the files keeps this step independent of directory-scanning
+      # behaviour that has changed between Python releases.
       - name: Byte-compile
-        run: python -m compileall -q midas_wizard.py tests
+        run: python -m compileall -q midas_wizard.py tests/test_wizard.py tests/test_cross_platform.py
 
-      - name: Unit tests (pytest if available, otherwise unittest)
+      - name: Unit tests
         run: python -m unittest discover -s tests -v
 
       - name: Built-in self test
@@ -42,3 +55,17 @@ jobs:
         run: |
           python midas_wizard.py --version
           python midas_wizard.py --emit-mct examples/three-span-beam.json
+
+      # Only meaningful on Windows, but cheap everywhere and it catches the
+      # "double-click does nothing" class of bug (a batch file needs CRLF, or
+      # cmd.exe mis-parses it into nonsense like "'em' is not recognized").
+      - name: Launcher file must keep its CRLF line endings
+        shell: python
+        run: |
+          import io
+          data = io.open("launch_wizard.bat", "rb").read()
+          crlf = data.count(b"\r\n")
+          lf = data.count(b"\n")
+          assert crlf == lf, "launch_wizard.bat has %d LF but only %d CRLF" % (lf, crlf)
+          assert data.startswith(b"\xef\xbb\xbf"), "launch_wizard.bat lost its UTF-8 BOM"
+          print("launch_wizard.bat: %d CRLF lines, BOM present" % crlf)
