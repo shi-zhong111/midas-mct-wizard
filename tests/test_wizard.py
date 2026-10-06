@@ -308,6 +308,47 @@ class TestValidation(unittest.TestCase):
         m["sec_assign"] = [{"from": "1", "to": "999", "sect": "99"}]
         self.assertTrue(mw.issues_for("sections", m))
 
+    def test_two_chinese_loadcase_names_are_caught(self):
+        """两个中文工况名会清洗成同一个兜底名 LC，MIDAS 只保留后一个。
+
+        真实事故：用户把工况命名为「自重」「二期」，两个都变成 LC，
+        导入时 MIDAS 报「数据 *STLDCASE 被修改」——一个工况被悄悄覆盖了。
+        必须在生成前拦住，而不是写出一个看起来正常、实际丢数据的文件。
+        """
+        m = mw.default_model()
+        m["loadcases"] = [{"name": "自重", "type": "D", "desc": ""},
+                          {"name": "二期", "type": "L", "desc": ""}]
+        issues = mw.issues_for("loadcases", m)
+        self.assertTrue(issues, "两个中文工况名撞车必须报错")
+        joined = " ".join(issues)
+        self.assertIn("自重", joined)
+        self.assertIn("二期", joined)
+        self.assertIn("LC", joined)
+
+    def test_distinct_ascii_loadcase_names_stay_clean(self):
+        m = mw.default_model()
+        m["loadcases"] = [{"name": "DL", "type": "D", "desc": ""},
+                          {"name": "LL", "type": "L", "desc": ""}]
+        m["beamloads"][0]["lc"] = "DL"
+        m["selfweight"]["lc"] = "DL"
+        self.assertEqual(mw.issues_for("loadcases", m), [])
+
+    def test_one_chinese_loadcase_is_allowed(self):
+        """只有一个中文名时不会撞车，不该拦 —— 已实测中文名能导入。"""
+        m = mw.default_model()
+        m["loadcases"] = [{"name": "自重", "type": "D", "desc": ""}]
+        m["beamloads"][0]["lc"] = "自重"
+        m["selfweight"]["lc"] = "自重"
+        self.assertEqual(mw.issues_for("loadcases", m), [])
+
+    def test_chinese_material_names_colliding_are_caught(self):
+        m = mw.default_model()
+        m["materials"] = [{"name": "混凝土", "type": "CONC", "mode": "user", "spec": "自定义",
+                           "elast": "3e7", "poisn": "0.2", "den": "25", "thermal": "1e-5"},
+                          {"name": "钢材", "type": "STEEL", "mode": "user", "spec": "自定义",
+                           "elast": "2e8", "poisn": "0.3", "den": "76.98", "thermal": "1.2e-5"}]
+        self.assertTrue(mw.issues_for("materials", m))
+
     def test_sec_assign_reversed_range_is_caught(self):
         m = mw.default_model()
         m["sec_assign"] = [{"from": "3", "to": "1", "sect": "1"}]

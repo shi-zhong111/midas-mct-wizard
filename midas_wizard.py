@@ -1353,6 +1353,7 @@ def issues_for(step_id, m):
     nn = len(m["nodes"])
     if step_id == "loadcases":
         _seen = {}
+        _ascii_map = {}
         if not m["loadcases"]:
             out.append("至少需要一个荷载工况。")
         for _i, _lc in enumerate(m["loadcases"], start=1):
@@ -1363,6 +1364,21 @@ def issues_for(step_id, m):
                 out.append("工况名「%s」重复了（第 %d 个和第 %d 个）。MIDAS 不允许重名，请改成不同的名字。" % (_nm, _seen[_nm], _i))
             else:
                 _seen[_nm] = _i
+            # 写进 MCT 的是 ASCII 化之后的名字：中文名会被去掉、退回 LC 这类兜底名。
+            # 两个不同中文名可能清洗成同一个名字（「自重」「二期」都会变成 LC），
+            # MIDAS 就会把后一个覆盖掉，只给一句「*STLDCASE 被修改」的警告 ——
+            # 所以这里必须按"清洗之后"的名字再查一次重名。
+            _asc = aname(_nm, "LC") if _nm else ""
+            if _asc:
+                if _asc in _ascii_map and _ascii_map[_asc][1] != _nm:
+                    out.append(
+                        "第 %d、%d 个工况名「%s」「%s」里的中文会被去掉，两个都变成「%s」，"
+                        "MIDAS 会把后一个覆盖掉、荷载全挤进同一个工况。"
+                        "请在「工况名称」那一列改成不同的英文名或拼音"
+                        "（例如 自重→SW、二期→SDL、人群→LL）。"
+                        % (_ascii_map[_asc][0], _i, _ascii_map[_asc][1], _nm, _asc))
+                else:
+                    _ascii_map[_asc] = (_i, _nm)
         for _i, _b in enumerate(m["beamloads"], start=1):
             _lc = txt(_b.get("lc")).strip()
             if not _lc:
@@ -1436,6 +1452,26 @@ def issues_for(step_id, m):
                 out.append("材料 %d 的泊松比应在 0 ~ 0.5 之间。" % _i)
             if is_num(_mat.get("den")) and float(_mat["den"]) <= 0:
                 out.append("材料 %d 的容重应大于 0。" % _i)
+        # 材料名同样会 ASCII 化，两个中文名可能撞成同一个 MAT1/MAT2 之外的兜底名
+        _mat_asc = {}
+        for _i, _mat in enumerate(m["materials"], start=1):
+            _nm = txt(_mat.get("name")).strip()
+            _asc = aname(_nm, "MAT%d" % _i) if _nm else ""
+            if _asc and _asc in _mat_asc and _mat_asc[_asc][1] != _nm:
+                out.append("材料名「%s」和「%s」清洗后都会变成「%s」，MIDAS 会覆盖掉一个。"
+                           "请改成不同的英文名。" % (_mat_asc[_asc][1], _nm, _asc))
+            elif _asc:
+                _mat_asc[_asc] = (_i, _nm)
+    if step_id == "sections":
+        _sec_asc = {}
+        for _i, _sec in enumerate(m["sections"], start=1):
+            _nm = txt(_sec.get("name")).strip()
+            _asc = aname(_nm, "SEC%d" % _i) if _nm else ""
+            if _asc and _asc in _sec_asc and _sec_asc[_asc][1] != _nm:
+                out.append("截面名「%s」和「%s」清洗后都会变成「%s」，MIDAS 会覆盖掉一个。"
+                           "请改成不同的英文名。" % (_sec_asc[_asc][1], _nm, _asc))
+            elif _asc:
+                _sec_asc[_asc] = (_i, _nm)
     if step_id in ("loadcases", "materials", "sections"):
         _cn = [txt(_x.get("name")) for _x in (m["loadcases"] if step_id == "loadcases" else
                (m["materials"] if step_id == "materials" else m["sections"]))]
