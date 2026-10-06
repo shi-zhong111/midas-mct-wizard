@@ -8,13 +8,14 @@
 > "MIDAS"、"MIDAS Civil NX" 是 MIDAS IT 的商标，本项目只是生成它支持的
 > MCT 文本格式。
 
+[![CI](https://github.com/shi-zhong111/midas-mct-wizard/actions/workflows/ci.yml/badge.svg)](https://github.com/shi-zhong111/midas-mct-wizard/actions/workflows/ci.yml)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)
 ![platform](https://img.shields.io/badge/platform-Windows-0078d4)
 
 > 代码质量由 `tests/` 下的单元测试 + `--selftest` 保证，在 Windows / Linux / macOS
-> 三平台 CI 上跑（见 `.github/workflows/ci.yml`）。仓库推上去后 CI 徽章会显示在这里。
+> 三平台 CI 上跑（见 `.github/workflows/ci.yml`）。
 
 ---
 
