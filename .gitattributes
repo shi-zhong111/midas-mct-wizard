@@ -1,0 +1,33 @@
+# Line-ending policy.
+#
+# This matters for real bugs, not tidiness:
+#
+#   * launch_wizard.bat is parsed by cmd.exe, which REQUIRES CRLF. A batch file
+#     with LF-only endings is mis-parsed and fails with bizarre errors like
+#     "'em' is not recognized as an internal or external command", because
+#     cmd.exe reads the file byte-by-byte and loses track of line boundaries.
+#     That is exactly the "double-click does nothing" failure users report.
+#
+#   * The file also needs its UTF-8 BOM kept, or the Chinese text in it
+#     displays as mojibake on a non-UTF-8 console.
+#
+# So: force CRLF for batch/PowerShell, keep everything else LF.
+
+* text=auto eol=lf
+
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+*.py   text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+*.dxf  text eol=lf
+*.mct  text eol=lf
+
+# Binary-ish: never touch these.
+*.png  binary
+*.jpg  binary
+*.zip  binary
+*.exe  binary
