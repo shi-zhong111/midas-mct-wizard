@@ -534,6 +534,43 @@ class TestSelftest(unittest.TestCase):
     def test_selftest_passes(self):
         self.assertEqual(mw.selftest(verbose=False), 0)
 
+    def test_selftest_survives_ascii_only_console(self):
+        """自检里的中文不能把程序打崩。
+
+        Windows 的英文/西欧语系控制台是 cp1252，`print("自检")` 会抛
+        UnicodeEncodeError 直接中断 —— GitHub 的 Windows CI runner 就是这种，
+        实测在 --selftest 上崩过。非 UTF-8 控制台的用户也会遇到同样的问题。
+        """
+        import io as _io
+
+        class AsciiOnly(_io.StringIO):
+            """模拟 cp1252 控制台：写非 ASCII 就报错。"""
+            encoding = "cp1252"
+
+            def write(self, s):
+                s.encode(self.encoding)          # 装不下就抛 UnicodeEncodeError
+                return _io.StringIO.write(self, s)
+
+        real = sys.stdout
+        sys.stdout = AsciiOnly()
+        try:
+            rc = mw.selftest(verbose=True)
+        finally:
+            captured = sys.stdout.getvalue()
+            sys.stdout = real
+        self.assertEqual(rc, 0, "自检在 ASCII 控制台上返回了失败")
+        self.assertIn("PASS", captured, "自检没打印出内容")
+
+    def test_safe_print_plain_ascii(self):
+        import io as _io
+        real = sys.stdout
+        sys.stdout = _io.StringIO()
+        try:
+            mw.safe_print("hello")
+            self.assertEqual(sys.stdout.getvalue().strip(), "hello")
+        finally:
+            sys.stdout = real
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

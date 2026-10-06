@@ -3200,6 +3200,21 @@ class Wizard(tk.Tk):
                 pass
 
 
+def safe_print(text=""):
+    """打印一行，遇到控制台编码装不下中文时也不会崩。
+
+    Windows 中文控制台是 cp936，装得下；但英文/西欧语系的 Windows 控制台是
+    cp1252，`print("自检")` 会直接抛 UnicodeEncodeError 把程序打断。
+    GitHub 的 Windows CI runner 就是这种情况，实测在 `--selftest` 上崩过。
+    所以这里先试一次，失败就把这一行的中文换成 '?' 再打。
+    """
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(text.encode(enc, "replace").decode(enc, "replace"))
+
+
 def selftest(verbose=True):
     """不打开界面的自检：跑一遍核心算法和 MCT 生成。返回 0 = 全部通过。
 
@@ -3209,14 +3224,14 @@ def selftest(verbose=True):
 
     def check(name, cond, detail=""):
         if verbose:
-            print("  [%s] %s%s" % ("PASS" if cond else "FAIL", name,
-                                   ("  " + detail) if (detail and not cond) else ""))
+            safe_print("  [%s] %s%s" % ("PASS" if cond else "FAIL", name,
+                                        ("  " + detail) if (detail and not cond) else ""))
         if not cond:
             fails.append(name)
 
     if verbose:
-        print("midas-mct-wizard %s 自检" % __version__)
-        print("-" * 52)
+        safe_print("midas-mct-wizard %s 自检" % __version__)
+        safe_print("-" * 52)
 
     # 1) 数字解析：nan / inf 不能让程序崩掉
     check("is_num 拒绝 nan/inf/空", not is_num("nan") and not is_num("1e999") and not is_num(""))
@@ -3297,8 +3312,9 @@ def selftest(verbose=True):
     check("build_data_report 不再 NameError", bool(build_data_report(default_model())))
 
     if verbose:
-        print("-" * 52)
-        print("结果：%s" % ("全部通过 ✓" if not fails else "%d 项未通过：%s" % (len(fails), "、".join(fails))))
+        safe_print("-" * 52)
+        safe_print("结果：%s" % ("全部通过 ✓" if not fails
+                                else "%d 项未通过：%s" % (len(fails), "、".join(fails))))
     return 1 if fails else 0
 
 
@@ -3353,13 +3369,13 @@ def main(argv=None):
             with open(args.emit_mct, "r", encoding="utf-8") as fh:
                 model = ensure_model(json.load(fh))
         except (OSError, ValueError) as exc:
-            sys.stderr.write("读不了工程文件：%s\n" % exc)
+            safe_print("读不了工程文件：%s" % exc)
             return 2
         bad = all_issues(model)
         if bad:
-            sys.stderr.write("模型还有 %d 处问题，先修好再生成：\n" % len(bad))
+            safe_print("模型还有 %d 处问题，先修好再生成：" % len(bad))
             for msg in bad:
-                sys.stderr.write("  - %s\n" % msg)
+                safe_print("  - %s" % msg)
             return 3
         text = build_mct(model)
         if args.outdir:
@@ -3368,7 +3384,7 @@ def main(argv=None):
             dst = os.path.join(args.outdir, stem + ".mct")
             with open(dst, "w", encoding="gbk", errors="replace", newline="") as fh:
                 fh.write(text)
-            print("已写出 %s" % dst)
+            safe_print("已写出 %s" % dst)
         else:
             sys.stdout.write(text)
         return 0
