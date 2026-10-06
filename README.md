@@ -19,6 +19,33 @@
 
 ---
 
+## 三步就能用起来
+
+### ① 填表
+
+左边是 8 个步骤，右边一次只显示一步。填完当前步点「确定，下一步」，
+有问题底部会用红字告诉你缺什么。
+
+![向导界面](docs/step6-loadcases.png)
+
+### ② 把生成的 .mct 导入 MIDAS
+
+第 8 步点「生成整套成果」，得到 `.mct` 文件。在 MIDAS Civil NX 里
+**文件 → 导入 → MIDAS/Civil MCT 文件**，选它就行。
+
+![导入 MCT](docs/import-mct.png)
+
+### ③ 让 MIDAS 分析
+
+导入完成就能直接运行分析，不需要再手动建任何东西。
+
+![分析结果](docs/analysis-result.png)
+
+> 上面三张图是一个变截面连续梁的例子：填表 → 导入 → 分析，
+> 全程没在 MIDAS 里点过建模菜单。
+
+---
+
 ## 这个工具解决什么问题
 
 MIDAS Civil NX 功能很强，但上手要先学一堆概念：节点、单元、材料、截面、
@@ -158,6 +185,10 @@ midas-mct-wizard/
 ├─ midas_wizard.py              主程序（单文件，约 3300 行，纯标准库）
 ├─ launch_wizard.bat            Windows 启动器（UTF-8 with BOM + CRLF）
 ├─ .gitattributes               强制 .bat/.ps1 用 CRLF（cmd.exe 的硬要求）
+├─ docs/
+│   ├─ step6-loadcases.png      界面截图（填入荷载工况那一步）
+│   ├─ import-mct.png           在 MIDAS 里导入 MCT
+│   └─ analysis-result.png      分析结果
 ├─ scripts/
 │   └─ install_python.ps1       首次运行时安装 Python（仅 python.org）
 ├─ examples/
@@ -166,10 +197,10 @@ midas-mct-wizard/
 │   ├─ custom-section.mct       自定义（DXF）截面示例
 │   └─ box-2000x1500.dxf        示例箱形截面图纸
 ├─ tests/
-│   ├─ test_wizard.py           47 个单元测试（标准库 unittest）
+│   ├─ test_wizard.py           62 个单元测试（标准库 unittest）
 │   └─ test_cross_platform.py   验证没有 winreg 也能 import（CI 跑 Linux/macOS）
 ├─ LICENSE                      MIT
-└─ .github/workflows/ci.yml     CI：3 个平台 × 3 个 Python 版本
+└─ .github/workflows/ci.yml     CI：3 个平台 × Python 3.9 / 3.12
 ```
 
 > **注意 `launch_wizard.bat` 的编码**：它必须保持 **UTF-8 with BOM + CRLF 换行**。
