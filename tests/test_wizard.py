@@ -571,6 +571,55 @@ class TestSelftest(unittest.TestCase):
         finally:
             sys.stdout = real
 
+    def test_write_text_stdout_survives_ascii_only_console(self):
+        """--emit-mct 把 MCT 打到屏幕时，控制台装不下中文也不能崩。
+
+        GitHub 的 Windows runner 控制台是 cp1252，MCT 里有中文注释和名称，
+        直接 sys.stdout.write 会抛 UnicodeEncodeError（CI 上实测崩过）。
+        """
+        import io as _io
+
+        class NarrowConsole(_io.StringIO):
+            """cp1252 控制台：text 层写非 ASCII 报错，buffer 层是原始的。"""
+            encoding = "cp1252"
+
+            def __init__(self):
+                _io.StringIO.__init__(self)
+                self.buffer = _io.BytesIO()
+
+            def write(self, s):
+                s.encode(self.encoding)
+                return _io.StringIO.write(self, s)
+
+        text = mw.build_mct(mw.default_model())      # 含中文注释的 MCT
+        self.assertTrue(any(ord(c) > 127 for c in text), "这份 MCT 本来该含中文")
+
+        real = sys.stdout
+        console = NarrowConsole()
+        sys.stdout = console
+        try:
+            mw.write_text_stdout(text)               # 不能抛异常
+        finally:
+            sys.stdout = real
+
+        written = console.buffer.getvalue()
+        self.assertTrue(written, "什么都没写出去")
+        # 回退到 GBK（MIDAS 读 MCT 用的就是它），内容必须完整
+        decoded = written.decode("gbk")
+        self.assertIn("MIDAS", decoded)
+        self.assertIn("建模向导", decoded)            # 中文注释完整保留
+
+    def test_write_text_stdout_normal_console(self):
+        """正常控制台（UTF-8）应该原样写文字，不走字节回退。"""
+        import io as _io
+        real = sys.stdout
+        sys.stdout = _io.StringIO()
+        try:
+            mw.write_text_stdout("中文测试")
+            self.assertEqual(sys.stdout.getvalue(), "中文测试")
+        finally:
+            sys.stdout = real
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

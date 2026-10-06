@@ -17,10 +17,12 @@ jobs:
         python-version: ["3.9", "3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+      # v5 / v6 run on Node.js 24. The older v4 / v5 releases target Node.js 20,
+      # which GitHub now forces onto 24 and reports as a deprecation warning.
+      - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 

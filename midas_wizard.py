@@ -3215,6 +3215,40 @@ def safe_print(text=""):
         print(text.encode(enc, "replace").decode(enc, "replace"))
 
 
+def write_text_stdout(text):
+    """把整段文本写到 stdout，控制台编码装不下中文也不崩。
+
+    `--emit-mct` 不带 --outdir 时走这里。MCT 里有中文（注释和名称），
+    cp1252 控制台直接 `sys.stdout.write` 会抛 UnicodeEncodeError ——
+    GitHub 的 Windows runner 上实测崩在 CLI smoke test 这一步。
+
+    处理顺序：
+      1. 按控制台编码写，能写就写；
+      2. 写不了就按 GBK（MIDAS 读 MCT 就是这个编码）写字节；
+      3. GBK 都装不下（有 GBK 没有的字符）就按 UTF-8 写字节。
+    2 和 3 都绕开控制台编码，重定向到文件时结果也是对的。
+    """
+    try:
+        sys.stdout.write(text)
+        return
+    except UnicodeEncodeError:
+        pass
+    buf = getattr(sys.stdout, "buffer", None)
+    if buf is None:                                  # 没有底层 buffer，只能退让
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        sys.stdout.write(text.encode(enc, "replace").decode(enc, "replace"))
+        return
+    for enc in ("gbk", "utf-8"):
+        try:
+            buf.write(text.encode(enc))
+            buf.flush()
+            return
+        except (UnicodeEncodeError, OSError):
+            continue
+    buf.write(text.encode("utf-8", "replace"))       # 兜底，绝不抛异常
+    buf.flush()
+
+
 def selftest(verbose=True):
     """不打开界面的自检：跑一遍核心算法和 MCT 生成。返回 0 = 全部通过。
 
@@ -3386,7 +3420,7 @@ def main(argv=None):
                 fh.write(text)
             safe_print("已写出 %s" % dst)
         else:
-            sys.stdout.write(text)
+            write_text_stdout(text)
         return 0
     return _run_gui()
 
