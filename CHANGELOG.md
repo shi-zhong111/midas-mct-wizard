@@ -1,4 +1,4 @@
-﻿# 更新记录
+# 更新记录
 
 ## 1.0.0
 
@@ -44,6 +44,14 @@
   （`pythonw` 下以前是彻底静默的）。
 - `midas_status()` 的进程探测结果缓存 5 秒，第 8 步不再每点一下复选框就起一个 `tasklist`。
 - 工作目录改到 `models/`，只读安装位置（如 `Program Files`）会自动退到用户目录。
+- **启动器找不到已装的 Python**：python.org 的安装包如果不勾
+  "Add python.exe to PATH"，`pyw` / `pythonw` 都不在 PATH 里，旧启动器会误判成
+  "没装 Python"、又要重装一遍。现在会继续去默认安装目录找
+  （`%LOCALAPPDATA%\Programs\Python\Python3*`、`C:\Python3*`、`%ProgramFiles%\Python3*`）。
+- **启动器换行符必须是 CRLF**：`cmd.exe` 解析批处理要求 CRLF，用 LF 换行会报
+  `'em' is not recognized as an internal or external command` 这种莫名其妙的错，
+  表现出来就是"双击没反应"。新增 `.gitattributes` 锁定 `.bat` / `.ps1` 用 CRLF，
+  防止再次退化。
 
 ### 工程化
 
