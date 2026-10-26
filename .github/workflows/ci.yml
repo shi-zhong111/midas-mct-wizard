@@ -41,22 +41,23 @@ jobs:
           python --version
           python -c "import tkinter; print('tkinter', tkinter.TkVersion)"
 
-      # Explicit file list: `compileall -q midas_wizard.py tests` is fine, but
-      # naming the files keeps this step independent of directory-scanning
-      # behaviour that has changed between Python releases.
-      - name: Byte-compile
-        run: python -m compileall -q midas_wizard.py tests/test_wizard.py tests/test_cross_platform.py
+      - name: Byte-compile every module
+        run: python -m compileall -q .
 
-      - name: Unit tests
+      - name: Unit tests (portable, no GUI)
         run: python -m unittest discover -s tests -v
 
-      - name: Built-in self test
+      # Generates the default model MCT of every one of the 9 flows and runs
+      # mct_lint over it. This is the cheapest end-to-end smoke test we have.
+      - name: Built-in self test (all flows)
         run: python midas_wizard.py --selftest
 
       - name: CLI smoke test
         run: |
           python midas_wizard.py --version
-          python midas_wizard.py --emit-mct examples/three-span-beam.json
+          python midas_wizard.py --list-flows
+          python midas_wizard.py --emit-mct beam --out build_smoke.mct
+          python -c "import io; t=io.open('build_smoke.mct', encoding='gbk').read(); assert '*NODE' in t and '*ENDDATA' in t; print('mct lines:', len(t.splitlines()))"
 
       # Only meaningful on Windows, but cheap everywhere and it catches the
       # "double-click does nothing" class of bug (a batch file needs CRLF, or

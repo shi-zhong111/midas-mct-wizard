@@ -1,0 +1,190 @@
+; ================================================================
+; MIDAS Civil NX — MCT（预制 T 梁 + 现浇桥面板 · 施工阶段联合截面）
+; 生成时间：2026-10-26 22:20:51
+; 项目：预制T梁_20m_施工阶段
+; 算例：20 m 简支 T 梁（第 05 讲 / 习题 4）
+; 流程：CS1 架设预制主梁（自重）→ CS2 现浇桥面板（湿重）→ CS3 桥面板硬化（龄期 20 d，
+;        联合截面生效）→ CS4 施工桥面系（二期恒载）
+; 截面：预制梁肋 0.400×1.000 m（A=0.4000 m2、形心距梁底 0.5000 m、I=0.033333 m4）
+;       现浇桥面板 1.600×0.250 m（A=0.4000 m2、形心距梁底 1.1250 m、I=0.002083 m4）
+;       组合截面 A=0.8000 m2、形心距梁底 0.8125 m、I=0.113542 m4；刚度分担 主梁 63.76 % / 板 36.24 %
+; 单元线（节点线）位置：取在**组合截面形心高度**（x 轴为桥轴、z 竖直向上，节点 z = 0）。
+;       以梁底为 0 起算：梁底 z = -0.8125、主梁顶 / 板底 z = 0.1875、板顶 z = 0.4375。
+; 联合截面基准点 = 单元线：主梁 Part CZ = -0.3125 m、桥面板 Part CZ = +0.3125 m
+;       （按面积加权 ΣA·CZ = 0，与 MIDAS 真跑过的 C:\Midas\work\e2e\施工阶段.mct 一致）
+; 虚拟截面（单元上赋的 *SECTION）= 组合 T 形，形心放在单元线上（Center: z = 0.8125）。
+; 荷载：q1 = 10.00 kN/m（主梁自重）、q2 = 10.00 kN/m（现浇板湿重）、q3 = 20.00 kN/m（二期）
+;       三个荷载都用梁单元均布荷载显式施加（不用 *SELFWEIGHT：单元上是组合 T 形虚拟截面
+;       A=0.80 m2，*SELFWEIGHT 会算出 20.0 kN/m，和题解的 10.0 kN/m 对不上）。
+; 施工阶段：CS1(7 d) → CS2(1 d) → CS3(20 d) → CS4(7 d)
+; 结果（弹性、与题解逐项对应）：跨中 M=2000.00 kN·m，主梁承担 1637.61、桥面板 362.39；
+;       应力（受拉为正）主梁底 +22.16、主梁顶 -16.65、板顶 -3.85 MPa
+; ================================================================
+*VERSION
+   9.5.0
+*UNIT    ; Unit System
+   KN, M, KJ, C
+*STRUCTYPE    ; Structure Type
+   0, 1, 1, NO, NO, 9.806, 0, NO, NO, NO
+*NODE    ; Nodes
+   1, 0, 0, 0
+   2, 1, 0, 0
+   3, 2, 0, 0
+   4, 3, 0, 0
+   5, 4, 0, 0
+   6, 5, 0, 0
+   7, 6, 0, 0
+   8, 7, 0, 0
+   9, 8, 0, 0
+   10, 9, 0, 0
+   11, 10, 0, 0
+   12, 11, 0, 0
+   13, 12, 0, 0
+   14, 13, 0, 0
+   15, 14, 0, 0
+   16, 15, 0, 0
+   17, 16, 0, 0
+   18, 17, 0, 0
+   19, 18, 0, 0
+   20, 19, 0, 0
+   21, 20, 0, 0
+*ELEMENT    ; Elements
+   1, BEAM, 1, 1, 1, 2, 0, 0
+   2, BEAM, 1, 1, 2, 3, 0, 0
+   3, BEAM, 1, 1, 3, 4, 0, 0
+   4, BEAM, 1, 1, 4, 5, 0, 0
+   5, BEAM, 1, 1, 5, 6, 0, 0
+   6, BEAM, 1, 1, 6, 7, 0, 0
+   7, BEAM, 1, 1, 7, 8, 0, 0
+   8, BEAM, 1, 1, 8, 9, 0, 0
+   9, BEAM, 1, 1, 9, 10, 0, 0
+   10, BEAM, 1, 1, 10, 11, 0, 0
+   11, BEAM, 1, 1, 11, 12, 0, 0
+   12, BEAM, 1, 1, 12, 13, 0, 0
+   13, BEAM, 1, 1, 13, 14, 0, 0
+   14, BEAM, 1, 1, 14, 15, 0, 0
+   15, BEAM, 1, 1, 15, 16, 0, 0
+   16, BEAM, 1, 1, 16, 17, 0, 0
+   17, BEAM, 1, 1, 17, 18, 0, 0
+   18, BEAM, 1, 1, 18, 19, 0, 0
+   19, BEAM, 1, 1, 19, 20, 0, 0
+   20, BEAM, 1, 1, 20, 21, 0, 0
+*GROUP    ; Group
+   EL_ALL, 1to21, 1to20, 0
+*BNDR-GROUP    ; Boundary Group
+   BC, 0
+*LOAD-GROUP    ; Load Group
+   SW
+   WET1
+   DL2
+*MATERIAL    ; Material
+   1, CONC , C50, 0, 0, , C, NO, 0.05, 2, 3.4500e+07, 0.2, 1.0e-05, 25, 0
+*SECT-PSCVALUE    ; PSC Value / General Section（虚拟截面 = 组合 T 形）
+ SECT=   1, PSC       , COMP_T            , CC, 0, 0, 0, 0, 0, 0, YES, NO, VALU, NO, NO, 
+       0.8, 0.666667, 0.666667, 0.204208, 0.113542, 0.0906667
+       0.8, 0.8, 0.4375, 0.8125, 0.04375, 0.08, 0, 0, 0, 0.8125
+       -0.8, 0.8, 0.8, -0.8, -0.8125, -0.8125, 0.4375, 0.4375
+       0.3, 0.2, 0.1, 0.1
+       YES, 0, 0, YES, , YES, , YES, , 0, YES, , YES, , YES, 
+       OPOLY=-0.2, 0, 0.2, 0, 0.2, 1, 0.8, 1, 0.8, 1.25, -0.8, 1.25, -0.8, 1, -0.2, 1
+
+*STLDCASE    ; Static Load Cases
+   SW, CS, "Self Weight (precast girder)"
+   WET1, CS, "Wet Concrete (deck slab)"
+   DL2, CS, "Second Dead Load"
+*CONSTRAINT    ; Supports
+   1, 111100, BC
+   21, 011100, BC
+*USE-STLD, SW
+*BEAMLOAD    ; Element Beam Loads（主梁自重 q1）
+     1, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, SW, NO, 0, 0, NO, 
+     2, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, SW, NO, 0, 0, NO, 
+     3, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, SW, NO, 0, 0, NO, 
+     4, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, SW, NO, 0, 0, NO, 
+     5, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, SW, NO, 0, 0, NO, 
+     6, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, SW, NO, 0, 0, NO, 
+     7, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, SW, NO, 0, 0, NO, 
+     8, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, SW, NO, 0, 0, NO, 
+     9, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, SW, NO, 0, 0, NO, 
+     10, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, SW, NO, 0, 0, NO, 
+     11, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, SW, NO, 0, 0, NO, 
+     12, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, SW, NO, 0, 0, NO, 
+     13, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, SW, NO, 0, 0, NO, 
+     14, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, SW, NO, 0, 0, NO, 
+     15, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, SW, NO, 0, 0, NO, 
+     16, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, SW, NO, 0, 0, NO, 
+     17, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, SW, NO, 0, 0, NO, 
+     18, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, SW, NO, 0, 0, NO, 
+     19, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, SW, NO, 0, 0, NO, 
+     20, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, SW, NO, 0, 0, NO, 
+*USE-STLD, WET1
+*BEAMLOAD    ; Element Beam Loads（现浇桥面板湿重 q2，加在预制主梁上）
+     1, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, WET1, NO, 0, 0, NO, 
+     2, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, WET1, NO, 0, 0, NO, 
+     3, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, WET1, NO, 0, 0, NO, 
+     4, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, WET1, NO, 0, 0, NO, 
+     5, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, WET1, NO, 0, 0, NO, 
+     6, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, WET1, NO, 0, 0, NO, 
+     7, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, WET1, NO, 0, 0, NO, 
+     8, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, WET1, NO, 0, 0, NO, 
+     9, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, WET1, NO, 0, 0, NO, 
+     10, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, WET1, NO, 0, 0, NO, 
+     11, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, WET1, NO, 0, 0, NO, 
+     12, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, WET1, NO, 0, 0, NO, 
+     13, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, WET1, NO, 0, 0, NO, 
+     14, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, WET1, NO, 0, 0, NO, 
+     15, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, WET1, NO, 0, 0, NO, 
+     16, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, WET1, NO, 0, 0, NO, 
+     17, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, WET1, NO, 0, 0, NO, 
+     18, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, WET1, NO, 0, 0, NO, 
+     19, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, WET1, NO, 0, 0, NO, 
+     20, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -10, 1, -10, 0, 0, 0, 0, WET1, NO, 0, 0, NO, 
+*USE-STLD, DL2
+*BEAMLOAD    ; Element Beam Loads（二期恒载 q3，由组合截面承担）
+     1, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -20, 1, -20, 0, 0, 0, 0, DL2, NO, 0, 0, NO, 
+     2, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -20, 1, -20, 0, 0, 0, 0, DL2, NO, 0, 0, NO, 
+     3, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -20, 1, -20, 0, 0, 0, 0, DL2, NO, 0, 0, NO, 
+     4, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -20, 1, -20, 0, 0, 0, 0, DL2, NO, 0, 0, NO, 
+     5, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -20, 1, -20, 0, 0, 0, 0, DL2, NO, 0, 0, NO, 
+     6, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -20, 1, -20, 0, 0, 0, 0, DL2, NO, 0, 0, NO, 
+     7, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -20, 1, -20, 0, 0, 0, 0, DL2, NO, 0, 0, NO, 
+     8, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -20, 1, -20, 0, 0, 0, 0, DL2, NO, 0, 0, NO, 
+     9, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -20, 1, -20, 0, 0, 0, 0, DL2, NO, 0, 0, NO, 
+     10, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -20, 1, -20, 0, 0, 0, 0, DL2, NO, 0, 0, NO, 
+     11, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -20, 1, -20, 0, 0, 0, 0, DL2, NO, 0, 0, NO, 
+     12, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -20, 1, -20, 0, 0, 0, 0, DL2, NO, 0, 0, NO, 
+     13, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -20, 1, -20, 0, 0, 0, 0, DL2, NO, 0, 0, NO, 
+     14, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -20, 1, -20, 0, 0, 0, 0, DL2, NO, 0, 0, NO, 
+     15, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -20, 1, -20, 0, 0, 0, 0, DL2, NO, 0, 0, NO, 
+     16, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -20, 1, -20, 0, 0, 0, 0, DL2, NO, 0, 0, NO, 
+     17, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -20, 1, -20, 0, 0, 0, 0, DL2, NO, 0, 0, NO, 
+     18, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -20, 1, -20, 0, 0, 0, 0, DL2, NO, 0, 0, NO, 
+     19, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -20, 1, -20, 0, 0, 0, 0, DL2, NO, 0, 0, NO, 
+     20, BEAM   , UNILOAD, GZ, NO , NO, LY, , , , 0, -20, 1, -20, 0, 0, 0, 0, DL2, NO, 0, 0, NO, 
+*STAGE    ; Define Construction Stage
+  NAME=CS1, 7, YES, YES, NO, 5
+  AELEM=EL_ALL, 7
+  ABNDR=BC, DEFORMED
+  ALOAD=SW, FIRST
+  NAME=CS2, 1, YES, YES, NO, 5
+  ALOAD=WET1, FIRST
+  NAME=CS3, 20, YES, YES, NO, 5
+  NAME=CS4, 7, YES, YES, NO, 5
+  ALOAD=DL2, FIRST
+*CPOSECT4CS    ; Composite Section for Construction Stage
+   SEC=1, CS1, USER, NO
+       1, ELEM, , , 0, 1, 1, 1, 1, 1, 1, 1, 0, -0.3125, 0.4, 0.333333, 0.333333, 0.038667, 0.033333, 0.005333, 0.2, 0.2, 0.5, 0.5, 0, 0, -0.2, 0.2, 0.2, -0.2, -0.5, -0.5, 0.5, 0.5, 0.333333, 0, 0
+       2, MATL, 1, CS3, 20, 1, 1, 1, 1, 1, 1, 1, 0, 0.3125, 0.4, 0.333333, 0.333333, 0.087417, 0.002083, 0.085333, 0.8, 0.8, 0.125, 0.125, 0, 0, -0.8, 0.8, 0.8, -0.8, -0.125, -0.125, 0.125, 0.125, 0.242424, 0, 0
+
+; 注：湿重 WET1 在 CS2 施加后一直保留 —— 它就是桥面板硬化后的自重，不是临时荷载；
+;     题解里 CS3 只让桥面板 Part 参与刚度，没有加/卸荷载，总跨中弯矩才是 2000 kN·m。
+*STAGE-CTRL    ; Construction Stage Analysis Control Data
+  YES, , INTERNAL, NO, NO, NO, NO, NO, YES, YES, NO, , , NO, NO, , NO, NO, NO
+  0 
+  NO
+  YES, YES, BOTH, 5, 0.01, YES, NO, YES, YES, 0, NO
+  NO, NO, 2, YES, 2, 5, 7, 10, 20
+  NO, , , 1, NO
+*ANAL-CTRL
+   YES, YES, 20, 0.001, YES, YES, YES, NO, NO, NO, NO, YES
+*ENDDATA

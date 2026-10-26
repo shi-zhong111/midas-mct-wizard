@@ -1,8 +1,10 @@
 # ---- runtime output (the wizard creates these next to itself) ----
 models/
+模型文件/
 pythonw_path.txt
 错误日志.txt
 *.log
+build_smoke.mct
 
 # ---- local-only notes (not part of the published repo) ----
 推送说明_本地留存.md

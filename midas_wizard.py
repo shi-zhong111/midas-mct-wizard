@@ -8,50 +8,44 @@ MIDAS Civil NX 建模向导  —  本地桌面程序（Python + Tkinter，不依
 
 MCT 命令的字段顺序依据 MIDAS 官方《MCT Command Quick Reference》
 (manual.midasuser.com, midas Civil 900 → Appendix → MCT Command Shell)。
-
-非官方工具，与 MIDAS IT 无隶属关系。https://github.com/
 """
 
-__version__ = "1.0.0"
-
-import argparse
 import datetime
+import importlib
 import json
-import math
 import os
 import subprocess
 import sys
-import tempfile
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+# 本文件同目录下的共享模块（wiz_common.py）与流程引擎要先能找到自己所在的目录
+# —— 用 importlib 从别处加载本文件时，sys.path 里没有程序目录，会 ModuleNotFoundError。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+from wiz_common import (SHAPES, SHAPE_BY_CODE, CAD_SHAPE, TS_SHAPE, DIM_SLOTS,
+                       is_num, num, numg, txt, aascii, aname,
+                       compute_section_props, suggest_unit, unit_advice, loop_area, orient_loop,
+                       read_dxf_loops, shape_code_of, _dist, _perimeter, _point_in_poly,
+                       _loop_terms, _tess_circle, _tess_arc, _chain_segments,
+                       STYPE_NAMES, MAT_TYPE_NAMES, MAT_MODES, MAT_MODE_NAMES,
+                       MAT_MODE_CODES, MAT_TYPE_CODES)
+from flow_api import FlowBase      # 流程插件基类（每种桥型一个 flow_*.py）
+import analysis_core               # 分析设置（移动荷载 / 模态 / 屈曲）的 MCT 片段 + 校验
+
+# 拱桥·施工阶段流程的引擎（同目录 arch_core.py，纯计算、不依赖界面）
+try:
+    import arch_core
+except Exception:            # 缺文件时只影响拱桥流程，梁桥照常用
+    arch_core = None
+
 APP_TITLE = "MIDAS Civil NX 建模向导"
+__version__ = "2.0.0"
+# 便携：程序文件夹就是自己的所在目录，整个文件夹拷到哪都跟着走
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-# 便携：程序文件夹就是自己的所在目录，整个文件夹拷到哪都跟着走。
-# 但如果程序装在只读位置（Program Files、只读网络盘、macOS 的 .app 里），
-# 就不能往自己旁边写东西 —— 这时自动退到用户目录，程序照样能用。
-_WORK_SUBDIR = "models"
-_FALLBACK_BASE = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME") \
-    or os.path.join(os.path.expanduser("~"), ".local", "share")
-
-
-def _pick_work_dir():
-    """优先用程序旁边的 models/（便携）；那儿写不了就换用户目录。"""
-    preferred = os.path.join(APP_DIR, _WORK_SUBDIR)
-    for cand in (preferred, os.path.join(_FALLBACK_BASE, "midas-mct-wizard", _WORK_SUBDIR)):
-        try:
-            os.makedirs(cand, exist_ok=True)
-            probe = os.path.join(cand, ".write_test")
-            with open(probe, "w"):
-                pass
-            os.remove(probe)
-            return cand
-        except OSError:
-            continue
-    return tempfile.gettempdir()
-
-
-WORK_DIR = _pick_work_dir()
+WORK_DIR = os.path.join(APP_DIR, "模型文件")
 # 结果文件夹已取消：MIDAS 的结果统一放进当前工程文件夹（和 .mct 放一起）
 
 
@@ -60,12 +54,12 @@ def find_midas_exe():
     import glob
     try:
         import winreg
-    except ImportError:                      # 非 Windows：没有注册表，跳过这一步
+    except ImportError:          # 非 Windows：没有注册表，只按常见安装目录/程序目录找
         winreg = None
     cands = []
     try:                                     # 1) 注册表里 MIDAS 自己记的安装位置
         if winreg is None:
-            raise OSError
+            raise OSError("winreg unavailable")
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\MIDAS") as k:
             i = 0
             while True:
@@ -103,21 +97,6 @@ SESSION_FILE = os.path.join(WORK_DIR, "_wizard_session.json")
 # 常量表
 # --------------------------------------------------------------------------
 
-SHAPES = [
-    ("SB", "实心矩形", [("H", "高"), ("B", "宽")]),
-    ("SR", "实心圆", [("D", "直径")]),
-    ("L", "角钢", [("H", "高"), ("B", "宽"), ("tw", "腹板厚"), ("tf", "翼缘厚")]),
-    ("T", "T 形", [("H", "高"), ("B", "宽"), ("tw", "腹板厚"), ("tf", "翼缘厚")]),
-    ("C", "槽钢", [("H", "高"), ("B1", "上宽"), ("tw", "腹板厚"), ("tf1", "上翼厚"), ("B2", "下宽"), ("tf2", "下翼厚")]),
-    ("H", "工字钢", [("H", "高"), ("B1", "上宽"), ("tw", "腹板厚"), ("tf1", "上翼厚"),
-                     ("B2", "下宽"), ("tf2", "下翼厚"), ("r1", "圆角 1"), ("r2", "圆角 2")]),
-    ("B", "箱形", [("H", "高"), ("B", "宽"), ("tw", "腹板厚"), ("tf1", "上翼厚"), ("C", "倒角"), ("tf2", "下翼厚")]),
-    ("P", "圆管", [("D", "外径"), ("tw", "壁厚")]),
-]
-SHAPE_BY_CODE = {s[0]: s for s in SHAPES}
-CAD_SHAPE = "CAD"
-TS_SHAPE = "TS"            # 变截面（引用两端截面，沿梁高线性渐变）
-DIM_SLOTS = 10             # DBUSER 截面固定写 10 个数值槽位（真实导出为 24 字段定长）
 
 # 材料规格库：名称 -> (类别, 弹性模量 kN/m², 泊松比, 容重 kN/m³, 线膨胀系数 1/℃)
 # 混凝土按 JTG 3362-18 弹性模量（×10⁴ MPa）；钢材 E=2.06×10⁵ MPa，容重按 MIDAS 默认 76.98 kN/m³
@@ -166,7 +145,7 @@ def default_model():
         "materials": [{"name": "C50", "type": "CONC", "mode": "spec", "spec": "C50",
                        "standard": "JTG3362-18(RC)", "dbname": "C50",
                        "elast": "3.45e7", "poisn": "0.2", "den": "25", "thermal": "0.00001"}],
-        "sections": [{"name": "GIRDER", "shape": "SB", "dims": ["2.0", "1.5"], "offset": "CC",
+        "sections": [{"name": "主梁", "shape": "SB", "dims": ["2.0", "1.5"], "offset": "CC",
                       "shear": "YES", "warp": "NO", "file": "", "unit": "0.001", "props": None}],
         "supports": [{"nodes": "1", "dx": True, "dy": True, "dz": True, "rx": False, "ry": False, "rz": False, "group": ""}],
         "loadcases": [{"name": "DL", "type": "D", "desc": ""}, {"name": "LL", "type": "L", "desc": ""}],
@@ -182,82 +161,6 @@ def default_model():
 # 数值 / MCT 生成
 # --------------------------------------------------------------------------
 
-def as_float(v, default=0.0):
-    """宽松转 float：任何不是有限数的输入都退回 default。
-
-    nan / inf / 1e999 以前会被 float() 收下，然后在 int() 那一步炸掉
-    （OverflowError 不是 ValueError，接不住），窗口上什么都看不见。
-    """
-    try:
-        f = float(str(v).strip())
-    except (TypeError, ValueError):
-        return default
-    return f if math.isfinite(f) else default
-
-
-def is_num(v):
-    try:
-        f = float(str(v).strip())
-    except (TypeError, ValueError):
-        return False
-    return str(v).strip() != "" and math.isfinite(f)
-
-
-def num(v):
-    f = as_float(v, None)
-    if f is None:
-        return "0"
-    if f == int(f) and abs(f) < 1e15:
-        return str(int(f))
-    return repr(f)
-
-
-def numg(v, sig=6):
-    """截面特性用：6 位有效数字，免得写出 0.39612500000000017 这种浮点噪声。"""
-    f = as_float(v, None)
-    if f is None:
-        return "0"
-    return "%.*g" % (sig, f)
-
-
-def txt(v):
-    return "" if v is None else str(v)
-
-
-def _squash(s):
-    """去掉 MCT 字段分隔符（逗号）和换行/制表符，并把连续空格压成一个。"""
-    for ch in (",", "\r", "\n", "\t"):
-        s = s.replace(ch, " ")
-    while "  " in s:
-        s = s.replace("  ", " ")
-    return s.strip()
-
-
-def aascii(v, fallback=""):
-    """边界组名专用：*CONSTRAINT 的组名里出现中文会导致整份导入失败（实测）。"""
-    return _squash("".join(ch for ch in txt(v) if ord(ch) < 128)) or fallback
-
-
-def aname(v, fallback=""):
-    """MCT 里写名称用：只清掉会破坏字段结构的东西，中文原样保留。
-
-    必须清掉的只有「逗号」——MCT 用逗号分隔字段，名称里带逗号会让整行错列；
-    换行/制表符同理。**非 ASCII（中文）不用清**：作者实测中文名能正常导入
-    （仓库里 examples/custom-section.mct 的截面名就是「主梁」，导入通过）。
-    MCT 文件按 GBK 写出去，中文能正常显示。
-
-    早先的版本会把非 ASCII 全部删掉，结果是用户填「自重」「二期」这种中文工况名
-    全被抹成兜底名，几个工况撞成同一个 —— 那是错的，已经改回来。
-    """
-    return _squash(txt(v)) or fallback
-
-
-STYPE_NAMES = {"0": "三维 (3D)", "1": "二维 X-Z 平面", "2": "二维 Y-Z 平面", "3": "二维 X-Y 平面", "4": "三维 (Z 向旋转约束)"}
-MAT_TYPE_NAMES = {"CONC": "混凝土", "STEEL": "钢材", "USER": "用户自定义"}
-MAT_MODES = [("spec", "规格自动填数"), ("db", "规范数据库"), ("user", "自定义数值")]
-MAT_MODE_NAMES = {k: v for k, v in MAT_MODES}
-MAT_MODE_CODES = {v: k for k, v in MAT_MODES}
-MAT_TYPE_CODES = {v: k for k, v in MAT_TYPE_NAMES.items()}
 
 
 def empty_model():
@@ -270,40 +173,9 @@ def empty_model():
     return m
 
 
-def ensure_model(data):
-    """把外面读进来的 JSON 补齐成一个完整模型。
-
-    打开旧工程、旧版本存档或手改过的 JSON 时，缺哪个键就补默认值 —— 以前直接
-    把读到的 dict 换上就用，少一个键后面 render() 就 KeyError，整个界面卡死。
-    """
-    m = default_model()
-    if not isinstance(data, dict):
-        return m
-    # 每一行还必须是 dict：手改坏的 JSON 里可能是 null / 数字 / 字符串，
-    # 光把列表补出来不够，访问 row.get() 一样会 AttributeError。
-    for key, dflt in m.items():
-        if isinstance(dflt, list) and isinstance(data.get(key), list):
-            data = dict(data)
-            data[key] = [row for row in data[key] if isinstance(row, dict)]
-    for key, dflt in m.items():
-        if key not in data:
-            continue
-        val = data[key]
-        if isinstance(dflt, list):
-            m[key] = val if isinstance(val, list) else dflt
-        elif isinstance(dflt, dict):
-            if isinstance(val, dict):
-                merged = dict(dflt)
-                merged.update(val)          # 旧版本多出来的键保留，缺的键用默认值补
-                m[key] = merged
-        else:
-            m[key] = val
-    return m
-
-
 STEP_CLEAR_KEYS = {
     "nodes": ("nodes",), "elements": ("elements",), "materials": ("materials",),
-    "sections": ("sections", "sec_assign"), "supports": ("supports",), "loadcases": ("loadcases",),
+    "sections": ("sections",), "supports": ("supports", "rigidlinks", "elasticlinks"), "loadcases": ("loadcases",),
     "loads": ("nodalloads", "beamloads"),
 }
 
@@ -372,17 +244,17 @@ def build_data_report(m):
                 add("       （尚未解析出轮廓）")
         else:
             if code == TS_SHAPE:
-                for key, lab in (("i_sect", "i 端"), ("j_sect", "j 端")):
-                    v = sec.get(key)
-                    if not is_num(v) or not (1 <= int(float(v)) <= len(m["sections"])):
-                        add("       变截面 %d 的「%s截面号」要填 1~%d。" % (i, lab, len(m["sections"])))
-                    elif int(float(v)) == i:
-                        add("       变截面 %d 不能引用自己。" % i)
-            shape = SHAPE_BY_CODE.get(code, SHAPES[0])
-            dims = sec.get("dims", [])
-            ds = "，".join("%s=%s" % (shape[2][k][0], num(dims[k]) if k < len(dims) else "0")
-                           for k in range(len(shape[2])))
-            add("       类型：%s（%s）    %s m" % (shape[1], code, ds))
+                # 变截面：这里只写存档信息；i/j 端引用合不合法由 issues_for() 统一检查。
+                add("       类型：变截面（TS，沿单元 i→j 线性渐变）    i 端引用截面 %s，j 端引用截面 %s%s"
+                    % (txt(sec.get("i_sect")).strip() or "（未填）",
+                       txt(sec.get("j_sect")).strip() or "（未填）",
+                       "（镜像）" if sec.get("mirror") else ""))
+            else:
+                shape = SHAPE_BY_CODE.get(code, SHAPES[0])
+                dims = sec.get("dims", [])
+                ds = "，".join("%s=%s" % (shape[2][k][0], num(dims[k]) if k < len(dims) else "0")
+                               for k in range(len(shape[2])))
+                add("       类型：%s（%s）    %s m" % (shape[1], code, ds))
         add("       偏心点 = %s      剪切变形 = %s      翘曲效应 = %s"
             % (sec.get("offset", "CC"), sec.get("shear", "YES"), sec.get("warp", "NO")))
     add("")
@@ -393,8 +265,26 @@ def build_data_report(m):
     add("  节点号            Dx Dy Dz Rx Ry Rz   边界组")
     for sp in m["supports"]:
         code = "".join(" 1" if sp.get(k) else " 0" for k in ("dx", "dy", "dz", "rx", "ry", "rz"))
-        add("  %-16s %s   %s" % (txt(sp.get("nodes")), code, txt(sp.get("group"))))
+        add("  %-16s %s   %s" % (txt(sp.get("nodes")), code, aname(sp.get("group"))))
     add("")
+
+    _rl = m.get("rigidlinks") or []
+    _el = m.get("elasticlinks") or []
+    if _rl or _el:
+        add("-" * 78)
+        add("五之二、节点连接  刚性连接 %d 条 / 弹性连接 %d 条" % (len(_rl), len(_el)))
+        add("-" * 78)
+        for _r in _rl:
+            _dof = _r.get("dof") or {}
+            _code = "".join("1" if _dof.get(_k) else "0" for _k in ("dx", "dy", "dz", "rx", "ry", "rz"))
+            add("  主节点 %-6s 自由度 %s  从节点：%s  组=%s"
+                % (txt(_r.get("master")), _code, txt(_r.get("slaves")), txt(_r.get("group"))))
+        for _i, _e in enumerate(_el, start=1):
+            add("  弹性连接 %d：节点 %s — %s   SDx=%s SDy=%s SDz=%s  SRx=%s SRy=%s SRz=%s  组=%s"
+                % (_i, txt(_e.get("n1")), txt(_e.get("n2")),
+                   num(_e.get("sdx")), num(_e.get("sdy")), num(_e.get("sdz")),
+                   num(_e.get("srx")), num(_e.get("sry")), num(_e.get("srz")), txt(_e.get("group"))))
+        add("")
 
     add("-" * 78)
     add("六、荷载工况  共 %d 个" % len(m["loadcases"]))
@@ -406,7 +296,7 @@ def build_data_report(m):
     add("  自重：%s" % ("计入" if sw.get("on") else "不计入"))
     if sw.get("on"):
         add("        工况 %s，系数 X=%s Y=%s Z=%s，荷载组 %s"
-            % (txt(sw.get("lc")), num(sw.get("x")), num(sw.get("y")), num(sw.get("z")), txt(sw.get("group"))))
+            % (txt(sw.get("lc")), num(sw.get("x")), num(sw.get("y")), num(sw.get("z")), aname(sw.get("group"))))
     add("")
 
     add("-" * 78)
@@ -431,27 +321,41 @@ def build_data_report(m):
                txt(bl.get("dir")), txt(bl.get("proj"))))
         add("        D = %s, %s, %s, %s      P = %s, %s, %s, %s      组=%s"
             % (num(bl.get("d1")), num(bl.get("d2")), num(bl.get("d3")), num(bl.get("d4")),
-               num(bl.get("p1")), num(bl.get("p2")), num(bl.get("p3")), num(bl.get("p4")), txt(bl.get("group"))))
+               num(bl.get("p1")), num(bl.get("p2")), num(bl.get("p3")), num(bl.get("p4")), aname(bl.get("group"))))
     add("")
+    _an = m.get("analysis") or {}
+    _mv = _an.get("moving") or {}
+    _eig = _an.get("eigen") or {}
+    _bk = _an.get("buckle") or {}
+    if _mv.get("on") or _eig.get("on") or _bk.get("on"):
+        add("-" * 78)
+        add("九、分析设置（实验功能：移动荷载 / 模态 / 屈曲）")
+        add("-" * 78)
+        if _mv.get("on"):
+            add("  移动荷载：车道 %s（偏心 %s m，冲击系数 %s）"
+                % (txt(_mv.get("lane")), num(_mv.get("ecc")), num(_mv.get("impact"))))
+            add("            车辆 %s：qk = %s kN/m，Pk = %s kN（用户定义车道荷载）"
+                % (txt(_mv.get("vname")), num(_mv.get("qk")), num(_mv.get("pk"))))
+            add("            移动荷载工况 %s（车辆组 %s），分析控制：Exact / CENTER / NORMAL"
+                % (txt(_mv.get("lc")), txt(_mv.get("vclass"))))
+        if _eig.get("on"):
+            add("  模态分析：提取前 %s 阶（%s 写法）"
+                % (num(_eig.get("n")), "旧版 4 字段" if _eig.get("legacy") else "新版 TYPE 5 字段"))
+        if _bk.get("on"):
+            add("  屈曲分析：%s 阶，可变荷载 %s" % (num(_bk.get("n")), txt(_bk.get("lcs"))))
+        add("")
+        add("  ★ 这三项是实验功能：格式照官方 MCT 手册字段写，本机没有 MIDAS 导出样本可对照。")
+        add("    第一次导入若报错，把 MIDAS 命令行号发作者，按行号改；也可以先取消勾选再生成。")
+        add("")
+
     add("=" * 78)
     add("说明：本表是向导输入的存档，导入 MIDAS 用的是同目录下的 .mct 文件。")
     add("=" * 78)
     return "\r\n".join(L) + "\r\n"
 
 
-_STATUS_CACHE = {"t": 0.0, "val": None}
-_STATUS_TTL = 5.0          # 秒：第 8 步每次重绘都查一遍太浪费（要起 tasklist 进程）
-
-
-def midas_status(force=False):
-    """查一下 MIDAS 是否在运行、API 是否已连接（读注册表里的连接信息）。
-
-    结果缓存 5 秒：第 8 步的复选框一动就会重绘，以前每次都去起一个 tasklist 进程。
-    """
-    import time as _time
-    now = _time.monotonic()
-    if not force and _STATUS_CACHE["val"] is not None and now - _STATUS_CACHE["t"] < _STATUS_TTL:
-        return _STATUS_CACHE["val"]
+def midas_status():
+    """查一下 MIDAS 是否在运行、API 是否已连接（读注册表里的连接信息）。"""
     running = False
     try:
         import subprocess as _sp
@@ -462,12 +366,9 @@ def midas_status(force=False):
     except Exception:
         running = False
     info = None
-    try:
-        import winreg
-    except ImportError:
-        return running, None
     for country in ("CH", "US"):
         try:
+            import winreg
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                                  r"Software\MIDAS\CVLwNX_%s\CONNECTION" % country, 0, winreg.KEY_READ)
             uri = str(winreg.QueryValueEx(key, "URI")[0])
@@ -480,8 +381,6 @@ def midas_status(force=False):
             break
         except (OSError, ImportError):
             continue
-    _STATUS_CACHE["t"] = now
-    _STATUS_CACHE["val"] = (running, info)
     return running, info
 
 
@@ -518,10 +417,6 @@ def api_call(method, path, body=None, timeout=120):
     if not conn:
         return None, "MIDAS 的 API 还没连接：请在 MIDAS 里「应用程序 → API Settings → 连接」。"
     uri, port, apikey = conn
-    # 这个请求带着 MIDAS 的 API Key，只允许发给本机 —— 注册表里的地址被改过时宁可失败。
-    if uri.split("//")[-1].split(":")[0].strip("[]") not in ("127.0.0.1", "localhost", "::1"):
-        return None, ("MIDAS API 地址不是本机（%s），出于安全考虑已拒绝发送 API Key。\n"
-                      "请在 MIDAS 里重新连接 API 设置。" % uri)
     payload = json.dumps(body).encode("utf-8") if body is not None else None
     last = "未知错误"
     for scheme in ("https", "http"):
@@ -624,425 +519,6 @@ def write_bundle(m, out_dir, prefix, enc, include_compat=False):
 #   换算：DXF 的 x -> 截面 y，DXF 的 y -> 截面 z，再按所选单位缩放。
 # --------------------------------------------------------------------------
 
-def _dist(p, q):
-    return ((p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2) ** 0.5
-
-
-def _perimeter(pts):
-    n = len(pts)
-    return sum(_dist(pts[i], pts[(i + 1) % n]) for i in range(n))
-
-
-def _point_in_poly(pt, poly):
-    x, y = pt
-    inside = False
-    n = len(poly)
-    for i in range(n):
-        x0, y0 = poly[i]
-        x1, y1 = poly[(i + 1) % n]
-        if (y0 > y) != (y1 > y):
-            xin = (x1 - x0) * (y - y0) / (y1 - y0) + x0
-            if x < xin:
-                inside = not inside
-    return inside
-
-
-def _loop_terms(pts):
-    """返回 (A, Sy, Sz, Iyy, Izz)：面积、一次矩、关于原点的二次矩。"""
-    n = len(pts)
-    a2 = sy = sz = iyy = izz = 0.0
-    for i in range(n):
-        y0, z0 = pts[i]
-        y1, z1 = pts[(i + 1) % n]
-        cr = y0 * z1 - y1 * z0
-        a2 += cr
-        sy += (y0 + y1) * cr
-        sz += (z0 + z1) * cr
-        iyy += (z0 * z0 + z0 * z1 + z1 * z1) * cr
-        izz += (y0 * y0 + y0 * y1 + y1 * y1) * cr
-    return a2 / 2.0, sy / 6.0, sz / 6.0, iyy / 12.0, izz / 12.0
-
-
-def compute_section_props(loops):
-    """由若干闭合环（含孔洞）算出截面特性；失败返回 None。
-
-    注意：CAD 里画截面常常随手画在图纸中间（坐标可能是 317321 这种大数）。
-    大数相减会把惯性矩算成 1e5 这种垃圾值，写进 MCT 还会被 6 位有效数字抹平、
-    让多边形退化成重复点 —— MIDAS 就报「截面尺寸输入有错误」。
-    所以这里先整体平移，再积分，最后把形心加回去；写 MCT 的环一律以形心为原点。
-    """
-    loops = [[[float(p[0]), float(p[1])] for p in lp] for lp in loops if len(lp) >= 3]
-    if not loops:
-        return None
-    # 坐标本身是 nan / inf，或者跨度大到乘平方就溢出的（1e308 这种），直接判失败。
-    # 必须先拦：后面 _perimeter() 里的 (dx)**2 会抛 OverflowError，
-    # 那不是 ValueError，一路穿到界面上只会显示一句看不懂的报错。
-    for lp in loops:
-        for p in lp:
-            if not (math.isfinite(p[0]) and math.isfinite(p[1])):
-                return None
-    _span = max(max(p[0] for p in lp) - min(p[0] for p in lp) for lp in loops)
-    _span = max(_span, max(max(p[1] for p in lp) - min(p[1] for p in lp) for lp in loops))
-    if not math.isfinite(_span) or _span > 1e150:
-        return None
-    # 去掉相邻重复点（含首尾重复）与面积可忽略的退化环
-    clean = []
-    for lp in loops:
-        pts = []
-        for p in lp:
-            if not pts or abs(p[0] - pts[-1][0]) > 1e-9 or abs(p[1] - pts[-1][1]) > 1e-9:
-                pts.append(p)
-        if len(pts) >= 3 and abs(pts[0][0] - pts[-1][0]) < 1e-9 and abs(pts[0][1] - pts[-1][1]) < 1e-9:
-            pts = pts[:-1]
-        if len(pts) >= 3 and abs(_loop_terms(pts)[0]) > 1e-12:
-            clean.append(pts)
-    loops = clean
-    if not loops:
-        return None
-
-    _ox = min(p[0] for lp in loops for p in lp)
-    _oz = min(p[1] for lp in loops for p in lp)
-    loops = [[[p[0] - _ox, p[1] - _oz] for p in lp] for lp in loops]
-
-    depth = []
-    for i, lp in enumerate(loops):
-        d = 0
-        for j, other in enumerate(loops):
-            if i != j and _point_in_poly(lp[0], other):
-                d += 1
-        depth.append(d)
-
-    A = Sy = Sz = Iyy = Izz = 0.0
-    peri_out = peri_in = 0.0
-    ys, zs = [], []
-    for lp, d in zip(loops, depth):
-        a, sy, sz, iyy, izz = _loop_terms(lp)
-        sign = 1.0 if d % 2 == 0 else -1.0
-        if (a > 0) != (sign > 0):
-            a, sy, sz, iyy, izz = -a, -sy, -sz, -iyy, -izz
-        A += a
-        Sy += sy
-        Sz += sz
-        Iyy += iyy
-        Izz += izz
-        if sign > 0:
-            peri_out += _perimeter(lp)
-            ys.extend(p[0] for p in lp)
-            zs.extend(p[1] for p in lp)
-        else:
-            peri_in += _perimeter(lp)
-    if A <= 1e-12 or not all(math.isfinite(v) for v in (A, Sy, Sz, Iyy, Izz)):
-        return None
-
-    cy = Sy / A
-    cz = Sz / A
-    iyy_c = Iyy - A * cz * cz          # 关于形心，对应 MIDAS 的 Iyy
-    izz_c = Izz - A * cy * cy          # 对应 MIDAS 的 Izz
-    ip = iyy_c + izz_c
-    n_hole = sum(1 for d in depth if d % 2 == 1)
-    j_hollow = n_hole > 0
-    if A <= 1e-12 or ip <= 1e-12:
-        j_approx = 0.0
-    elif j_hollow:
-        # 空心闭口截面（箱梁）用薄壁 Bredt 公式 J = 4·Am²·t/Sm，直接用孔洞环推壁中线：
-        #   A_cav, P_cav 取所有孔洞的面积/周长（各自平移到形心，否则平行轴定理算错）
-        #   t = 壁面积 / 孔洞周长      —— 等效壁厚
-        #   Sm = P_cav + 2·t          —— 壁中线周长（矩形环上是精确的）
-        #   Am = A_cav + 0.5·t·P_cav  —— 壁中线围成的面积
-        # 旧版本对空心截面也套实心近似 A⁴/(40·Ip)，箱梁会差 1~3 个数量级，
-        # 而箱梁恰恰是本程序自定义截面的主用场景。
-        a_cav = p_cav = 0.0
-        for lp, d in zip(loops, depth):
-            if d % 2 == 1:
-                a_cav += abs(_loop_terms(lp)[0])
-                p_cav += _perimeter(lp)
-        if p_cav > 1e-12 and a_cav > 1e-12:
-            t_eff = A / p_cav                       # 等效壁厚（均匀壁厚时就是真实壁厚）
-            s_mean = p_cav + 4.0 * t_eff            # 壁中线周长（矩形环上精确）
-            a_mean = a_cav + 0.5 * t_eff * p_cav    # 壁中线围成的面积
-            j_approx = 4.0 * a_mean * a_mean * t_eff / s_mean
-        else:
-            j_approx = (A ** 4) / (40.0 * ip)
-    else:
-        # 实心截面：圣维南近似 J ≈ A⁴/(40·Ip)（圆截面误差约 1.5%、方截面约 7%）
-        j_approx = (A ** 4) / (40.0 * ip)
-    return {
-        "A": A,
-        "Cy": cy + _ox,                # 回到原图坐标，只为了让界面能显示「画在哪儿」
-        "Cz": cz + _oz,
-        "Iyy": iyy_c,
-        "Izz": izz_c,
-        "Ixx": j_approx,
-        # 剪切面积：矩形取 5/6·A。以前只有 *SECT-PSCVALUE 那条路自己算，
-        # *SECTION VALUE 那条路读不到就写成 0 —— 两条路必须一致。
-        "ASy": A * 5.0 / 6.0,
-        "ASz": A * 5.0 / 6.0,
-        "CyP": max(ys) - cy,
-        "CyM": cy - min(ys),
-        "CzP": max(zs) - cz,
-        "CzM": cz - min(zs),
-        "PERI_OUT": peri_out,
-        "PERI_IN": peri_in,
-        "N_LOOP": len(loops),
-        "N_HOLE": n_hole,
-        # J 的算法标记：BREDT = 空心薄壁公式，STVENANT = 实心近似。界面会照这个提示。
-        "J_METHOD": "BREDT" if j_hollow else "STVENANT",
-        "J_APPROX": True,
-        # 写 *SECT-PSCVALUE 的 OPOLY / IPOLY 用（偶数层=外轮廓，奇数层=孔洞）。
-        # 这里已经把形心平移到原点：MIDAS 的一般截面就是这么存的，
-        # 坐标也变小了，不会被 6 位有效数字抹成重复点。
-        "OUTER_LOOPS": [[[round(p[0] - cy, 9), round(p[1] - cz, 9)] for p in lp]
-                        for lp, d in zip(loops, depth) if d % 2 == 0],
-        "HOLE_LOOPS": [[[round(p[0] - cy, 9), round(p[1] - cz, 9)] for p in lp]
-                       for lp, d in zip(loops, depth) if d % 2 == 1],
-        "DRAW_OFFSET": [round(_ox, 6), round(_oz, 6)],   # 原图里画在哪儿（显示/排查用）
-    }
-
-
-def suggest_unit(sec):
-    """面积明显不对时，按面积反推这张图应该选哪个图纸单位，返回单位名（如 "m 米"）。
-
-    面积随单位比例的平方变化：A ∝ scale²。用当前单位算出的面积反推需要的比例，
-    再挑最接近的那个单位。
-    """
-    try:
-        cur = float(sec.get("unit") or "0.001")
-        a = float((sec.get("props") or {}).get("A") or 0)
-    except (TypeError, ValueError):
-        return ""
-    if a <= 0 or cur <= 0:
-        return ""
-    need = cur * (1.0 / a) ** 0.5          # 想要 1 m² 上下
-    return min(UNIT_SCALES, key=lambda u: abs(float(u[1]) / need - 1.0))[0]
-
-
-def unit_advice(sec):
-    """面积明显不像梁截面时，给人一句能照做的建议。"""
-    _sug = suggest_unit(sec)
-    _cur = {u[1]: u[0] for u in UNIT_SCALES}.get(txt(sec.get("unit")).strip(), "")
-    if _sug and _cur and _sug == _cur:
-        return ("现在选的单位（%s）其实就是对的，只是这个面积还是按老单位算出来的 —— "
-                "点一下「重新计算」重算一遍。" % _cur)
-    if _sug:
-        return "「图纸单位」多半选错了（这张图按「%s」算才合理），改过来程序会立刻重算。" % _sug
-    return "请检查第 4 步的「图纸单位」是不是选错了。"
-
-
-def loop_area(lp):
-    """多边形的有向面积（鞋带公式）×2：正=逆时针。"""
-    s = 0.0
-    n = len(lp)
-    for i in range(n):
-        x1, y1 = lp[i][0], lp[i][1]
-        x2, y2 = lp[(i + 1) % n][0], lp[(i + 1) % n][1]
-        s += x1 * y2 - x2 * y1
-    return s
-
-
-def orient_loop(lp, ccw=True):
-    """按 MIDAS 的习惯整理环的方向：外轮廓逆时针(CCW)、孔洞顺时针(CW)。
-
-    注意：顶点里不要重复第一点（实测重复首点会让 MIDAS 报「截面尺寸输入有错误」），
-    相邻的重复点也一并去掉。
-    """
-    pts = []
-    for p in lp:
-        q = [float(p[0]), float(p[1])]
-        if not pts or abs(q[0] - pts[-1][0]) > 1e-9 or abs(q[1] - pts[-1][1]) > 1e-9:
-            pts.append(q)
-    if len(pts) > 1 and abs(pts[0][0] - pts[-1][0]) < 1e-9 and abs(pts[0][1] - pts[-1][1]) < 1e-9:
-        pts = pts[:-1]
-    a = loop_area(pts)
-    if (a < 0 and ccw) or (a > 0 and not ccw):
-        pts.reverse()
-    return pts
-
-
-def _tess_circle(cx, cy, r, n=72):
-    import math
-    return [(cx + r * math.cos(2 * math.pi * i / n), cy + r * math.sin(2 * math.pi * i / n)) for i in range(n)]
-
-
-def _tess_arc(cx, cy, r, a1, a2, n=48):
-    import math
-    if a2 < a1:
-        a2 += 360.0
-    return [(cx + r * math.cos(math.radians(a1 + (a2 - a1) * i / n)),
-             cy + r * math.sin(math.radians(a1 + (a2 - a1) * i / n))) for i in range(n + 1)]
-
-
-def _chain_segments(segs, tol):
-    """把开口线段首尾相接成闭合环。返回 (闭合环列表, 没用上的线段数)。"""
-    segs = [list(s) for s in segs if len(s) >= 2]
-    total = len(segs)
-    used = 0
-    loops = []
-    while segs:
-        cur = segs.pop(0)
-        used += 1
-        joined = True
-        while joined and not (len(cur) > 2 and _dist(cur[0], cur[-1]) <= tol):
-            joined = False
-            for i, s in enumerate(segs):
-                if _dist(cur[-1], s[0]) <= tol:
-                    cur.extend(s[1:])
-                elif _dist(cur[-1], s[-1]) <= tol:
-                    cur.extend(list(reversed(s))[1:])
-                elif _dist(cur[0], s[-1]) <= tol:
-                    cur = s[:-1] + cur
-                elif _dist(cur[0], s[0]) <= tol:
-                    cur = list(reversed(s))[:-1] + cur
-                else:
-                    continue
-                segs.pop(i)
-                used += 1
-                joined = True
-                break
-        if len(cur) >= 4 and _dist(cur[0], cur[-1]) <= tol:
-            loops.append(cur[:-1])
-        elif len(cur) < 2:
-            used -= 1
-    # 没能围成环的段数：以前用 total - used 算，而 used 是按「弹出了几段」记的，
-    # 结果几乎总是 0，界面上那句「有 N 段线没能围成闭合环」永远不会出现（等于静默丢图）。
-    return loops, len(segs)
-
-
-def read_dxf_loops(path, unit_scale=1.0):
-    """读 DXF，返回 (闭合环列表, 提示信息列表)。"""
-    raw = None
-    for enc in ("utf-8-sig", "utf-8", "gbk", "latin-1"):
-        try:
-            with open(path, "r", encoding=enc, errors="strict") as fh:
-                raw = fh.read()
-            break
-        except (UnicodeDecodeError, LookupError):
-            continue
-        except OSError as exc:
-            return [], ["读不了文件：%s" % exc]
-    if raw is None:
-        return [], ["dxf 编码无法识别（既不是 UTF-8 也不是 GBK）"]
-
-    lines = raw.splitlines()
-    pairs = []
-    i = 0
-    while i + 1 < len(lines):
-        code = lines[i].strip()
-        val = lines[i + 1].strip()
-        i += 2
-        try:
-            pairs.append((int(code), val))
-        except ValueError:
-            continue
-
-    seg, in_ent = [], False
-    for k, (code, val) in enumerate(pairs):
-        if code == 0 and val == "SECTION":
-            nxt = pairs[k + 1] if k + 1 < len(pairs) else (0, "")
-            in_ent = (nxt[0] == 2 and nxt[1] == "ENTITIES")
-            continue
-        if code == 0 and val == "ENDSEC":
-            in_ent = False
-            continue
-        if in_ent:
-            seg.append((code, val))
-
-    closed, open_segs, notes = [], [], []
-    state = {"type": None, "pts": [], "flags": 0, "num": None}
-
-    def flush():
-        t, pts, fl, nu = state["type"], state["pts"], state["flags"], state["num"]
-        if t in ("LWPOLYLINE", "POLYLINE") and 0 < len(pts) < 3:
-            msg = ("有一条多段线只读到 %d 个顶点，已忽略"
-                   "（描图时请用「多段线」一笔画完轮廓，别用两三个点）" % len(pts))
-            if msg not in notes:
-                notes.append(msg)
-        if t in ("LWPOLYLINE", "POLYLINE") and len(pts) >= 3:
-            (closed if (fl & 1) else open_segs).append(pts)
-        elif t == "CIRCLE" and nu and nu[2] > 0:
-            closed.append(_tess_circle(nu[0], nu[1], nu[2]))
-        elif t == "ARC" and nu and nu[2] > 0:
-            open_segs.append(_tess_arc(nu[0], nu[1], nu[2], nu[3], nu[4]))
-        elif t == "LINE" and nu and len(nu) >= 4:
-            open_segs.append([(nu[0], nu[1]), (nu[2], nu[3])])
-        elif t in ("SPLINE", "ELLIPSE", "INSERT", "SOLID", "HATCH", "3DFACE"):
-            msg = "%s 暂不支持，已忽略（请把轮廓炸开成多段线 / 直线 / 圆弧）" % t
-            if msg not in notes:
-                notes.append(msg)
-        state["type"], state["pts"], state["flags"], state["num"] = None, [], 0, None
-
-    for code, val in seg:
-        if code == 0:
-            # 经典 DXF（R12 及更早）的 POLYLINE 把顶点放在后面的 VERTEX 实体里：
-            #   POLYLINE ... 66=1 70=1 / VERTEX x y / VERTEX x y / ... / SEQEND
-            # 所以整个 POLYLINE 段落必须按一个实体处理 —— 中途遇到 VERTEX 不能 flush，
-            # 收尾要等 SEQEND（或下一个不是 VERTEX 的实体）。
-            if state["type"] == "POLYLINE" and val in ("VERTEX", "SEQEND"):
-                state["num"] = [0.0, 0.0, 0.0, 0.0, 0.0]
-                continue
-            flush()
-            state["type"] = val
-            state["num"] = [0.0, 0.0, 0.0, 0.0, 0.0]
-            continue
-        t = state["type"]
-        try:
-            f = float(val)
-        except ValueError:
-            continue
-        if t in ("LWPOLYLINE", "POLYLINE"):
-            if code == 10:
-                state["pts"].append([f, 0.0])
-            elif code == 20 and state["pts"]:
-                state["pts"][-1][1] = f
-            elif code == 70:
-                state["flags"] |= int(f)
-        elif t == "CIRCLE":
-            if code == 10:
-                state["num"][0] = f
-            elif code == 20:
-                state["num"][1] = f
-            elif code == 40:
-                state["num"][2] = f
-        elif t == "ARC":
-            idx = {10: 0, 20: 1, 40: 2, 50: 3, 51: 4}.get(code)
-            if idx is not None:
-                state["num"][idx] = f
-        elif t == "LINE":
-            idx = {10: 0, 20: 1, 11: 2, 21: 3}.get(code)
-            if idx is not None:
-                state["num"][idx] = f
-    flush()
-
-    if open_segs:
-        xs = [p[0] for s in open_segs for p in s]
-        ys = [p[1] for s in open_segs for p in s]
-        diag = ((max(xs) - min(xs)) ** 2 + (max(ys) - min(ys)) ** 2) ** 0.5 if xs else 1.0
-        tol = max(diag * 1e-6, 1e-9)
-        chained, leftover = _chain_segments(open_segs, tol)
-        if chained:
-            notes.append("由直线/圆弧串成了 %d 个闭合环" % len(chained))
-            closed.extend(chained)
-        if leftover:
-            notes.append("有 %d 段线没能围成闭合环，已忽略——请确认轮廓是闭合的" % leftover)
-
-    loops = []
-    for lp in closed:
-        pts = [(p[0] * unit_scale, p[1] * unit_scale) for p in lp]
-        if len(pts) >= 3:
-            loops.append(pts)
-    return loops, notes
-
-
-UNIT_SCALES = [("mm 毫米", "0.001"), ("cm 厘米", "0.01"), ("dm 分米", "0.1"), ("m 米", "1"),
-               ("in 英寸", "0.0254"), ("ft 英尺", "0.3048")]
-
-
-def shape_code_of(sec):
-    """从截面记录里取出形状代码（下拉框显示的是 'SB · 实心矩形' 这种文本）。"""
-    raw = txt(sec.get("shape", "SB"))
-    code = raw.split("·")[0].strip().split(" ")[0].strip()
-    if code in (CAD_SHAPE, TS_SHAPE) or code in SHAPE_BY_CODE:
-        return code
-    return "SB"
 
 
 def build_mct(m):
@@ -1061,23 +537,16 @@ def build_mct(m):
     add("")
 
     add("*UNIT    ; Unit System")
-    if compat:
-        # Civil 2022 及更早：*UNIT 只有力/长度两个字段，多写会报错
-        add("; FORCE, LENGTH")
-        add("   %s, %s" % (p.get("force", "KN"), p.get("dist", "M")))
-    else:
-        add("; FORCE, LENGTH, HEAT, TEMPER")
-        add("   %s, %s, %s, %s" % (p.get("force", "KN"), p.get("dist", "M"),
-                                   p.get("heat", "KJ"), p.get("temp_unit", "C")))
+    add("; FORCE, LENGTH" if not compat else "; FORCE, LENGTH, HEAT, TEMPER")
+    add("   %s, %s, %s, %s" % (p.get("force", "KN"), p.get("dist", "M"),
+                               p.get("heat", "KJ"), p.get("temp_unit", "C")))
     add("")
 
     add("*STRUCTYPE    ; Structure Type")
     if compat:
-        # Civil 2022 及更早的字段更少：iSTYP, iMASS, iSMAS, GRAV, TEMPER, bALIGNBEAM, bALIGNSLAB。
-        # 这行是照实测能导入的旧版 .mct 原文写的（见 samples/）。
-        add("; iSTYP, iMASS, iSMAS, GRAV, TEMPER, bALIGNBEAM, bALIGNSLAB")
-        add("   %s, 1, %s, %s, %s, NO, NO" % (p.get("styp", "1"), p.get("smas", "1"),
-                                               num(p.get("grav", 9.806)), num(p.get("temper", 0))))
+        add("; iSTYP, iMASS, iSMAS, bMASSOFFSET, bSELFWEIGHT, GRAV, TEMPER, bALIGNBEAM, bALIGNSLAB, bROTRIGID")
+        add("   %s, 1, %s, NO, YES, %s, %s, NO, NO, YES" % (p.get("styp", "1"), p.get("smas", "1"),
+                                                            num(p.get("grav", 9.806)), num(p.get("temper", 0))))
     else:
         add("; iSTYP, iMASS, iSMAS, bMASSOFFSET, bSELFWEIGHT, GRAV, TEMPER, bALIGNBEAM, bALIGNSLAB, bROTRIGID")
         add("   %s, 1, 1, YES, NO, %s, %s, NO, NO, NO" % (p.get("styp", "1"),
@@ -1095,13 +564,7 @@ def build_mct(m):
         for i, mat in enumerate(m["materials"], start=1):
             head = "   %d, %s, %s, 0, 0, " % (i, mat.get("type", "CONC"),
                                               aname(mat.get("name"), "MAT%d" % i))
-            # PLAST 必须占一个空字段（就是这里两个逗号之间什么都不写）！
-            # 少了它整行会往前串一位，MIDAS 会连报三个错：
-            #   「TUNIT值有错误」「必须输入是或否」「整数值错误」
-            # 因为 TUNIT 收到了 C、bMASS 收到了 NO、DAMPRATIO 收到了 0.05。
-            # 这个空字段照抄自 MIDAS Civil NX 自己导出的原文（见 examples/）。
-            # Civil 2022 及更早没有 DAMPRATIO 字段；NX 才有，默认阻尼比 0.05。
-            tail_head = head + (", C, NO, " if compat else ", C, NO, 0.05, ")
+            tail_head = head + (", C, NO, 0.05, " if compat else ", C, NO, 0.05, ")
             if mat.get("mode") == "db":
                 add(tail_head + "1, %s, , %s, NO, 0" % (txt(mat.get("standard")), txt(mat.get("dbname"))))
             else:
@@ -1113,7 +576,7 @@ def build_mct(m):
     # DXF 自定义截面走 *SECT-PSCVALUE（MIDAS 里叫「PSC 数值 / 一般截面」）——
     # MIDAS 没有 *SECT-GENERAL 这个命令；多边形截面只能由 *SECT-PSCVALUE 定义，
     # 它不进 *SECTION 表。格式照 MIDAS Civil NX 自己导出的原文写。
-    _cad = [(i, s) for i, s in enumerate(m["sections"], start=1) if shape_code_of(s) == CAD_SHAPE]
+    _cad = [(i, s) for i, s in enumerate(m["sections"], start=1) if s.get("shape") == CAD_SHAPE]
     _val_fallback = []          # 外轮廓不唯一的 CAD 截面：*SECT-PSCVALUE 放不下，退回「数值截面」
     if _cad:
         add("*SECT-PSCVALUE    ; PSC Value, General Section（DXF 自定义截面）")
@@ -1206,9 +669,9 @@ def build_mct(m):
                 add("      %s, %s" % (", ".join(_di), ", ".join(_dj)))
                 continue
             head = "   %d, %s, %s, %s, 0, 0, 0, 0, 0, 0, %s, %s, " % (
-                i, "VALUE" if shape_code_of(sec) == CAD_SHAPE else "DBUSER",
+                i, "VALUE" if sec.get("shape") == CAD_SHAPE else "DBUSER",
                 name, off, sec.get("shear", "YES"), sec.get("warp", "NO"))
-            if shape_code_of(sec) == CAD_SHAPE:
+            if sec.get("shape") == CAD_SHAPE:
                 pr = sec.get("props") or {}
                 # VALUE 型（数值截面）—— 字段按 MIDAS Civil NX 自己导出的写法（共 23 个）：
                 #   iSEC, TYPE, SNAME, OFFSET, 0,0,0,0,0,0, bSD, bWE, SHAPE, BUILT, D1..D8, iCEL
@@ -1286,7 +749,31 @@ def build_mct(m):
         for s in sup:
             code = "".join("1" if s.get(k) else "0" for k in ("dx", "dy", "dz", "rx", "ry", "rz"))
             ids = " ".join([t for t in txt(s.get("nodes")).replace(",", " ").split() if t])
-            add("   %s, %s, %s" % (ids, code, aascii(s.get("group"))))
+            add("   %s, %s, %s" % (ids, code, txt(s.get("group"))))
+        add("")
+
+    # ---- 节点连接：主从节点（刚性连接）/ 弹性连接（第03讲 3.1.2 单元连接）----
+    _rl = m.get("rigidlinks") or []
+    if _rl:
+        add("*RIGIDLINK    ; Rigid Link（主从节点刚性连接）")
+        add("; M-NODE, DOF, S-NODE LIST, GROUP")
+        for _r in _rl:
+            _dof = _r.get("dof") or {}
+            _code = "".join("1" if _dof.get(_k) else "0" for _k in ("dx", "dy", "dz", "rx", "ry", "rz"))
+            add("   %s, %s, %s, %s" % (num(_r.get("master")), _code,
+                                       " ".join(t for t in txt(_r.get("slaves")).replace(",", " ").split() if t),
+                                       aname(_r.get("group"))))
+        add("")
+    _el = m.get("elasticlinks") or []
+    if _el:
+        add("*ELASTICLINK    ; Elastic Link（弹性连接 / 6 向弹簧）")
+        add("; iNO, iNODE1, iNODE2, LINK, ANGLE, R_SDx, R_SDy, R_SDz, R_SRx, R_SRy, R_SRz, SDx, SDy, SDz, SRx, SRy, SRz, bSHEAR, DRy, DRz, GROUP")
+        for _i, _e in enumerate(_el, start=1):
+            add("   %d, %s, %s, GEN, 0, NO, NO, NO, NO, NO, NO, %s, %s, %s, %s, %s, %s, NO, 0.5, 0.5, %s"
+                % (_i, num(_e.get("n1")), num(_e.get("n2")),
+                   num(_e.get("sdx")), num(_e.get("sdy")), num(_e.get("sdz")),
+                   num(_e.get("srx")), num(_e.get("sry")), num(_e.get("srz")),
+                   aname(_e.get("group"))))
         add("")
 
     if m["loadcases"]:
@@ -1296,26 +783,9 @@ def build_mct(m):
             add("   %s, %s, %s" % (aname(lc.get("name"), "LC"), lc.get("type", "D"), aname(lc.get("desc"))))
         add("")
 
-    def lcname(raw):
-        """把荷载引用的工况名换算成 *STLDCASE 里实际写出去的那个名字。
-
-        两边必须一致：*STLDCASE 会去掉非 ASCII，而 *USE-STLD 以前直接用原名，
-        名字里只要有中文（或逗号）对不上，MIDAS 就把这些荷载整批丢掉。
-        """
-        want = txt(raw).strip()
-        if not want:
-            return ""
-        for _lc in m["loadcases"]:
-            if txt(_lc.get("name")).strip() == want:
-                return aname(want, "LC")
-        for _lc in m["loadcases"]:
-            if aname(_lc.get("name"), "LC") == aname(want, "LC"):
-                return aname(want, "LC")
-        return aname(want, "LC")
-
     sw = m["selfweight"]
     if sw.get("on") and txt(sw.get("lc")).strip():
-        add("*USE-STLD, " + lcname(sw["lc"]))
+        add("*USE-STLD, " + txt(sw["lc"]))
         add("; *SELFWEIGHT, X, Y, Z, GROUP")
         add("*SELFWEIGHT    ; Self Weight")
         add("   %s, %s, %s, %s" % (num(sw.get("x")), num(sw.get("y")),
@@ -1323,7 +793,7 @@ def build_mct(m):
         add("")
 
     for nl in m["nodalloads"]:
-        add("*USE-STLD, " + lcname(nl.get("lc")))
+        add("*USE-STLD, " + txt(nl.get("lc")))
         add("*CONLOAD    ; Nodal Loads")
         add("; NODE_LIST, FX, FY, FZ, MX, MY, MZ, GROUP")
         add("   %s, %s, %s, %s, %s, %s, %s, %s"
@@ -1332,18 +802,22 @@ def build_mct(m):
         add("")
 
     for bl in m["beamloads"]:
-        add("*USE-STLD, " + lcname(bl.get("lc")))
+        add("*USE-STLD, " + txt(bl.get("lc")))
         add("*BEAMLOAD    ; Element Beam Loads")
         add("; ELEM_LIST, CMD, TYPE, DIR, bPROJ, D1, P1, D2, P2, D3, P3, D4, P4, GROUP")
-        add("   %s, %s, %s, %s, %s, NO, LY, , , , %s, %s, %s, %s, %s, %s, %s, %s, , NO, 0, 0, NO, %s, 0, NO"
+        add("   %s, %s, %s, %s, %s, NO, LY, , , , %s, %s, %s, %s, %s, %s, %s, %s, , NO, 0, 0, NO,"
             % (txt(bl.get("elems")), bl.get("cmd", "BEAM"), bl.get("type", "UNILOAD"), bl.get("dir", "GZ"),
                bl.get("proj", "NO"), num(bl.get("d1")), num(bl.get("p1")), num(bl.get("d2")), num(bl.get("p2")),
-               num(bl.get("d3")), num(bl.get("p3")), num(bl.get("d4")), num(bl.get("p4")),
-               aascii(bl.get("group"))))
+               num(bl.get("d3")), num(bl.get("p3")), num(bl.get("d4")), num(bl.get("p4"))))
         add("")
 
+    # ---- 分析设置（可选，默认不写）：移动荷载 / 模态 / 屈曲 ----
+    # 写法统一在 analysis_core.py；不勾选时一行也不写（生成结果与以前逐字节一致）。
+    for _ln in analysis_core.lines(m, element_count=len(m["elements"])):
+        add(_ln)
     add("*ENDDATA")
-    # 兜底：MIDAS 遇到字段里的非 ASCII 会整份放弃导入，这里把非注释行的非 ASCII 全部去掉
+    # 说明：名称里的中文 MIDAS Civil NX 实测能正常导入（MCT 按本地 ANSI/GBK 存即可），
+    # 这里不做整份 ASCII 过滤，免得把中文材料名/截面名/边界组名弄丢。
     return "\r\n".join(L) + "\r\n"
 
 
@@ -1369,11 +843,6 @@ def issues_for(step_id, m):
                 out.append("工况名「%s」重复了（第 %d 个和第 %d 个）。MIDAS 不允许重名，请改成不同的名字。" % (_nm, _seen[_nm], _i))
             else:
                 _seen[_nm] = _i
-            # 中文名原样写进 MCT（实测可导入），所以这里只按原名查重就够了。
-            # 但名称里不能有逗号：MCT 用逗号分字段，带了会让整行错列。
-            if _nm and "," in _nm:
-                out.append("工况名「%s」里有逗号。MCT 用逗号分隔字段，写出去会让整行错位 —— "
-                           "请把逗号改成空格或其他字符。" % _nm)
         for _i, _b in enumerate(m["beamloads"], start=1):
             _lc = txt(_b.get("lc")).strip()
             if not _lc:
@@ -1428,34 +897,19 @@ def issues_for(step_id, m):
                     out.append("单元 %d 与单元 %d 连接的是同样的两个支点（重复单元）。" % (_i, _dup[_key]))
                 else:
                     _dup[_key] = _i
-    if step_id == "sections":
-        _ne = len(m["elements"])
-        _ns = len(m["sections"])
-        for _i, _a in enumerate(m.get("sec_assign") or [], start=1):
-            if not (is_num(_a.get("from")) and is_num(_a.get("to")) and is_num(_a.get("sect"))):
-                out.append("分段 %d 的起始/终止单元号和截面号都要填数字。" % _i)
-                continue
-            _f = int(float(_a["from"])); _t = int(float(_a["to"])); _s = int(float(_a["sect"]))
-            if _f < 1 or _t > _ne or _f > _t:
-                out.append("分段 %d 的单元范围 %d~%d 越界（现有 1~%d 号单元，且起始不能大于终止）。"
-                           % (_i, _f, _t, _ne))
-            if _s < 1 or _s > _ns:
-                out.append("分段 %d 指定的截面号 %d 越界（现有 1~%d 号截面）。" % (_i, _s, _ns))
     if step_id == "materials":
         for _i, _mat in enumerate(m["materials"], start=1):
             if is_num(_mat.get("poisn")) and not (0.0 <= float(_mat["poisn"]) < 0.5):
                 out.append("材料 %d 的泊松比应在 0 ~ 0.5 之间。" % _i)
             if is_num(_mat.get("den")) and float(_mat["den"]) <= 0:
                 out.append("材料 %d 的容重应大于 0。" % _i)
-            # 材料名原样写出去（中文可导入），只挡逗号
-            _nm = txt(_mat.get("name")).strip()
-            if _nm and "," in _nm:
-                out.append("材料名「%s」里有逗号，会让 MCT 整行错位，请改掉。" % _nm)
-    if step_id == "sections":
-        for _i, _sec in enumerate(m["sections"], start=1):
-            _nm = txt(_sec.get("name")).strip()
-            if _nm and "," in _nm:
-                out.append("截面名「%s」里有逗号，会让 MCT 整行错位，请改掉。" % _nm)
+    if step_id in ("loadcases", "materials", "sections"):
+        _cn = [txt(_x.get("name")) for _x in (m["loadcases"] if step_id == "loadcases" else
+               (m["materials"] if step_id == "materials" else m["sections"]))]
+        _cn = [x for x in _cn if x.strip() and any(ord(c) > 127 for c in x)]
+        if _cn:
+            out.append("名称里有中文（%s）。MIDAS 的 MCT 不允许非 ASCII 字符，导入时会自动换成 "
+                       "MAT1/SEC1 这类英文名——想保留可读名字请改用英文或拼音。" % "、".join(_cn[:3]))
     if step_id == "nodes":
         if nn == 0:
             out.append("至少需要一个支点。")
@@ -1514,6 +968,19 @@ def issues_for(step_id, m):
                         out.append("变截面 %d 的「%s截面号」要填 1~%d。" % (i, lab, len(m["sections"])))
                     elif int(float(v)) == i:
                         out.append("变截面 %d 不能引用自己。" % i)
+                    elif shape_code_of(m["sections"][int(float(v)) - 1]) == TS_SHAPE:
+                        out.append("变截面 %d 的「%s」指向了另一个变截面；MIDAS 只认两端都是等截面。"
+                                   % (i, lab))
+                # TAPERED 那行只写一个 SHAPE，两端必须同一种形状，否则 MIDAS 会按一种形状
+                # 去解释两端的尺寸，生成的刚度是错的
+                _ends = []
+                for _k in ("i_sect", "j_sect"):
+                    _v = sec.get(_k)
+                    _ends.append(shape_code_of(m["sections"][int(float(_v)) - 1])
+                                 if is_num(_v) and 1 <= int(float(_v)) <= len(m["sections"]) else None)
+                if all(_ends) and TS_SHAPE not in _ends and _ends[0] != _ends[1]:
+                    out.append("变截面 %d 两端引用的截面形状不同（%s / %s）——MIDAS 的 TAPERED 一行只写一个 "
+                               "SHAPE，两端必须是同一种形状，否则生成的模型是错的。" % (i, _ends[0], _ends[1]))
                 continue
             shape = SHAPE_BY_CODE.get(code, SHAPES[0])
             dims = sec.get("dims", [])
@@ -1533,6 +1000,32 @@ def issues_for(step_id, m):
                     out.append("支承 %d 引用了不存在的节点 %s。" % (i, t))
             if not any(s.get(k) for k in ("dx", "dy", "dz", "rx", "ry", "rz")):
                 out.append("支承 %d 至少要约束一个自由度。" % i)
+        for i, r in enumerate(m.get("rigidlinks") or [], start=1):
+            for key, zh in (("master", "主节点"), ("slaves", "从节点")):
+                ids = [t for t in txt(r.get(key)).replace(",", " ").split() if t]
+                if not ids:
+                    out.append("刚性连接 %d 的「%s」不能空。" % (i, zh))
+                for t in ids:
+                    if not is_num(t) or not (1 <= int(float(t)) <= nn):
+                        out.append("刚性连接 %d 的%s「%s」不存在（节点号 1~%d）。" % (i, zh, t, nn))
+            dof = r.get("dof") or {}
+            if not any(dof.get(k) for k in ("dx", "dy", "dz", "rx", "ry", "rz")):
+                out.append("刚性连接 %d 一个自由度都没勾，等于没连。" % i)
+        for i, e in enumerate(m.get("elasticlinks") or [], start=1):
+            for key, zh in (("n1", "节点 1"), ("n2", "节点 2")):
+                v = txt(e.get(key)).strip()
+                if not is_num(v) or not (1 <= int(float(v)) <= nn):
+                    out.append("弹性连接 %d 的%s「%s」不存在（节点号 1~%d）。" % (i, zh, v, nn))
+            if txt(e.get("n1")).strip() and txt(e.get("n1")).strip() == txt(e.get("n2")).strip():
+                out.append("弹性连接 %d 的两个节点是同一个。" % i)
+            vals = []
+            for k in ("sdx", "sdy", "sdz", "srx", "sry", "srz"):
+                if not is_num(e.get(k)):
+                    out.append("弹性连接 %d 的刚度「%s」要填数字（不约束的方向填 0）。" % (i, k))
+                else:
+                    vals.append(float(e.get(k)))
+            if vals and not any(abs(v) > 0 for v in vals):
+                out.append("弹性连接 %d 的 6 个刚度全是 0，等于没连。" % i)
     elif step_id == "loads":
         names = [txt(lc.get("name")).strip() for lc in m["loadcases"]]
         for i, nl in enumerate(m["nodalloads"], start=1):
@@ -1554,6 +1047,9 @@ def issues_for(step_id, m):
                        for k in ("p1", "p2", "p3", "p4")):
                 out.append("梁单元荷载 %d 的荷载值全是 0（等于没加荷载），MIDAS 导入时会报"
                            "「荷载值输入有错误」。填上实际数值，或者把这一条删掉。" % i)
+    elif step_id == "export":
+        out += analysis_core.issues(m, element_count=len(m["elements"]),
+                                    loadcase_names=[txt(lc.get("name")).strip() for lc in m["loadcases"]])
     return out
 
 
@@ -1577,7 +1073,21 @@ STEP_HINTS = [
     "先定义荷载工况（例如 DL 恒载、LL 活载），再指定哪些工况计入结构自重。自重沿 -Z 取 -1 表示向下。",
     "第 6 步的工况只是名字，荷载值在这一步加（自重除外，它在第 6 步已经算好了）。"
     "字段含义点上面的「▶ 怎么填这一步」展开看。",
-    "确认无误后保存 .mct 文件，在 MIDAS Civil NX 中「文件 → 导入 → MCT 命令文件」选择它；也可以复制文本粘贴到「工具 → 命令窗口」运行。",
+    "确认无误后保存 .mct 文件，在 MIDAS Civil NX 中「文件 → 导入 → MCT 命令文件」选择它；也可以复制文本粘贴到「工具 → 命令窗口」运行。"
+    "页面下方还有「分析设置（可选）」：移动荷载 / 模态 / 屈曲，都是实验功能，不勾就不写。",
+]
+
+# ---------------- 第二条流程：拱桥 · 施工阶段联合截面 ----------------
+MODE_BEAM_LABEL = "梁桥（一次成桥）"
+MODE_ARCH_LABEL = "拱桥·施工阶段"
+MODE_LABEL_TO_CODE = {MODE_BEAM_LABEL: "beam", MODE_ARCH_LABEL: "arch"}
+ARCH_STEP_IDS = ["arch_axis", "arch_section", "arch_stages", "arch_export"]
+ARCH_STEP_TITLES = ["拱轴线", "截面（施工部件）", "材料与施工阶段", "生成 / 直连 MIDAS"]
+ARCH_STEP_HINTS = [
+    "填跨径、矢高、拱轴系数（悬链线 m 必须大于 1），程序自动生成拱轴线和单元。改参数后下方预览会跟着变。",
+    "先填截面尺寸点「按参数重新生成截面」；再给每个部件指定「从哪个阶段开始参与受力」和龄期。部件 1 是预制部分，从第一阶段就受力。",
+    "选混凝土等级和容重；要算收缩徐变就勾上（可填环境湿度）。阶段表默认按「预制合龙 → 浇纵缝 → 纵缝硬化+浇顶板 → 顶板硬化」排好，可改名字和天数。",
+    "生成 .mct 拿去 MIDAS 导入，或者开着 MIDAS 直接点「③ 直连 MIDAS」，程序会导入、跑施工阶段分析、把各阶段内力取回来。",
 ]
 
 
@@ -1595,8 +1105,6 @@ def all_issues(m):
     """
     out = []
     for _i, _sid in enumerate(STEP_IDS, start=1):
-        if _sid == "export":
-            continue
         for _msg in issues_for(_sid, m):
             if is_advisory(_msg):
                 continue
@@ -1608,6 +1116,137 @@ def all_issues(m):
 # 界面
 # --------------------------------------------------------------------------
 
+
+# ==========================================================================
+# 流程注册表：每种桥型 = 一个 FlowBase 子类 + 一个 flow_*.py 插件
+# ==========================================================================
+class BeamFlow(FlowBase):
+    """梁桥（一次成桥）—— 原来的 8 步流程，界面方法还写在 Wizard 上。"""
+    code = "beam"
+    label = MODE_BEAM_LABEL
+    step_ids = STEP_IDS
+    step_titles = STEP_TITLES
+    step_hints = STEP_HINTS
+    last_hint = "文件已准备好，可以保存或复制。"
+
+    def default_model(self):
+        return default_model()
+
+    def reset_model(self):
+        return empty_model()
+
+    def issues(self, sid):
+        return issues_for(sid, self.m)
+
+    def data_report(self):
+        return build_data_report(self.m)
+
+    def clear_title(self, sid):
+        return {"nodes": "支点", "elements": "单元", "materials": "材料", "sections": "截面",
+                "supports": "支承", "loadcases": "荷载工况与自重",
+                "loads": "节点荷载和梁单元荷载"}.get(sid, "")
+
+    def clear(self, sid):
+        m = self.m
+        for k in (STEP_CLEAR_KEYS.get(sid) or ()):
+            m[k] = []
+        if sid == "loadcases":
+            m["selfweight"] = {"on": True, "lc": "", "x": "0", "y": "0", "z": "-1", "group": ""}
+        if sid in ("elements", "sections"):
+            m["sec_assign"] = []
+        for attr in ("v_span_start", "v_span_dx", "v_span_n"):
+            if hasattr(self.wiz, attr):
+                delattr(self.wiz, attr)
+
+    def __getattr__(self, name):
+        if name.startswith("step_"):
+            return getattr(self.wiz, name)
+        raise AttributeError(name)
+
+
+class ArchFlow(FlowBase):
+    """拱桥 · 施工阶段联合截面（第二条流程）。"""
+    code = "arch"
+    label = MODE_ARCH_LABEL
+    step_ids = ARCH_STEP_IDS
+    step_titles = ARCH_STEP_TITLES
+    step_hints = ARCH_STEP_HINTS
+    last_hint = "文件已准备好，可以保存、复制或直连 MIDAS。"
+
+    def default_model(self):
+        if arch_core is None:
+            raise RuntimeError("同目录下找不到 arch_core.py")
+        return arch_core.default_model()
+
+    def reset_model(self):
+        return self.default_model()
+
+    def issues(self, sid):
+        return self.wiz.arch_issues(sid)
+
+    def data_report(self):
+        try:
+            return self.wiz._arch_report(self.m)
+        except Exception:                                      # noqa: BLE001
+            return ""
+
+    def clear_title(self, sid):
+        return {"arch_axis": "拱轴线", "arch_section": "截面（施工部件）",
+                "arch_stages": "材料与施工阶段"}.get(sid, "")
+
+    def clear(self, sid):
+        try:
+            d = arch_core.default_model()
+        except Exception:                                      # noqa: BLE001
+            return
+        m = self.m
+        if sid == "arch_axis":
+            m["arch"] = dict(d.get("arch") or {})
+        elif sid == "arch_section":
+            for k in ("parts", "box", "section_name"):
+                if k in d:
+                    m[k] = d[k]
+        elif sid == "arch_stages":
+            for k in ("stages", "creep", "humidity", "gamma", "material"):
+                if k in d:
+                    m[k] = d[k]
+
+    def __getattr__(self, name):
+        if name.startswith("step_"):
+            return getattr(self.wiz, name)
+        raise AttributeError(name)
+
+
+# 插件流程：模块名 -> 流程代码（模块里的类必须叫 Flow，类属性 code 要等于这里的代码）
+FLOW_PLUGIN_MODULES = [
+    ("cable", "flow_cable"),      # 斜拉桥（鱼骨刺·成桥）
+    ("susp", "flow_susp"),        # 悬索桥
+    ("cs", "flow_cs"),            # 施工阶段梁桥（连续刚构悬臂 / 简支变连续）
+    ("cfst", "flow_cfst"),        # 钢管混凝土拱
+    ("frame", "flow_frame"),      # 平面刚架（自由建模 + 矩阵位移法）
+    ("tbeam", "flow_tbeam"),      # 预制 T 梁 + 现浇桥面板（施工阶段联合截面）
+    ("cfst2", "flow_cfst2"),      # 两跨钢管混凝土（施工顺序 · 湿重对比）
+]
+FLOW_LOAD_ERRORS = {}
+
+
+def discover_flows():
+    """内置流程 + 自动发现的插件流程。插件的 import 失败不能拖垮主程序。"""
+    flows = {}
+    for cls in (BeamFlow, ArchFlow):
+        flows[cls.code] = cls
+    for code, modname in FLOW_PLUGIN_MODULES:
+        try:
+            mod = importlib.import_module(modname)
+            cls = getattr(mod, "Flow")
+            if not getattr(cls, "label", ""):
+                cls.label = getattr(mod, "LABEL", code)
+            flows[code] = cls
+        except Exception as exc:                               # noqa: BLE001
+            FLOW_LOAD_ERRORS[code] = "%s: %s" % (type(exc).__name__, exc)
+    return flows
+
+
 class Wizard(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -1616,10 +1255,17 @@ class Wizard(tk.Tk):
         self.minsize(940, 620)
 
         self.model = default_model()
+        self.mode = self.model.get("mode", "beam")
         self.step = 0
         self.saved_path = None
         self.bundle_files = None
         self.result_files = None
+
+        self._flow_classes = discover_flows()
+        self._flow_objs = {}
+        self._mode_cache = {}
+        if self.mode not in self._flow_classes:
+            self.mode = "beam"
 
         self._init_style()
         self._build_top()
@@ -1649,7 +1295,24 @@ class Wizard(tk.Tk):
         bar = ttk.Frame(self, padding=(12, 10, 12, 6))
         bar.pack(fill="x")
 
-        ttk.Label(bar, text=APP_TITLE, style="H1.TLabel").grid(row=0, column=0, columnspan=8, sticky="w")
+        ttk.Label(bar, text=APP_TITLE, style="H1.TLabel").grid(row=0, column=0, columnspan=4, sticky="w")
+
+        # 流程选择：梁桥 / 拱桥 / 斜拉桥 / 悬索桥 / 施工阶段梁桥 / 钢管混凝土拱 …
+        # 新桥型只要往 FLOW_PLUGIN_MODULES 里加一个模块，下拉里自动出现。
+        self._flow_order = list(self._flow_classes.keys())
+        self._flow_labels = {}
+        for _c in self._flow_order:
+            self._flow_labels[getattr(self._flow_classes[_c], "label", _c)] = _c
+        self.v_flow = tk.StringVar(value=getattr(self._flow_classes.get(self.mode), "label", ""))
+        f_mode = ttk.Frame(bar)
+        f_mode.grid(row=0, column=4, columnspan=4, sticky="e")
+        ttk.Label(f_mode, text="流程：", style="Hint.TLabel").pack(side="left")
+        self.cb_flow = ttk.Combobox(f_mode, textvariable=self.v_flow, values=list(self._flow_labels),
+                                    width=30, state="readonly")
+        self.cb_flow.pack(side="left")
+        self.cb_flow.bind("<<ComboboxSelected>>", lambda _e: self._on_flow_change())
+        self.v_mode = self.v_flow          # 兼容旧脚本：v_mode 就是「流程」下拉的变量
+
         ttk.Label(bar, text="一次只填一件事：填完当前步骤点「确定，下一步」。标有（可选）的项目不填也能继续。",
                   style="Hint.TLabel").grid(row=1, column=0, columnspan=8, sticky="w", pady=(2, 8))
 
@@ -1803,21 +1466,51 @@ class Wizard(tk.Tk):
     def field_label(parent, text, optional=False, row=0, col=0):
         ttk.Label(parent, text=text + ("（可选）" if optional else "")).grid(row=row, column=col, sticky="w")
 
+    # ---------------- 流程插件 ----------------
+    def flow(self):
+        """当前流程的插件对象（按需创建并缓存）。"""
+        obj = self._flow_objs.get(self.mode)
+        if obj is None:
+            cls = self._flow_classes.get(self.mode) or self._flow_classes["beam"]
+            obj = cls(self)
+            self._flow_objs[self.mode] = obj
+        return obj
+
+    def _flow_label_of(self, code):
+        cls = self._flow_classes.get(code)
+        return getattr(cls, "label", "") if cls else ""
+
+    def _on_flow_change(self):
+        code = self._flow_labels.get(self.v_flow.get(), "")
+        if not code or code == self.mode:
+            return
+        self._switch_mode(code)
+
+    def _on_mode_radio(self):
+        """兼容旧脚本/旧测试：就是切流程（v_mode 里存的是流程中文名）。"""
+        code = self._flow_labels.get(self.v_mode.get(), "")
+        if code and code != self.mode:
+            self._switch_mode(code)
+
     # ---------------- 渲染 ----------------
     def render(self):
         for w in self.form.winfo_children():
             w.destroy()
-        self.step = max(0, min(len(STEP_IDS) - 1, self.step))
-        sid = STEP_IDS[self.step]
-        self.v_title.set("第 %d / %d 步 · %s" % (self.step + 1, len(STEP_IDS), STEP_TITLES[self.step]))
-        self.v_hint.set(STEP_HINTS[self.step])
+        flow = self.flow()
+        ids = list(flow.step_ids)
+        titles = list(flow.step_titles)
+        hints = list(flow.step_hints)
+        self.step = max(0, min(len(ids) - 1, self.step))
+        sid = ids[self.step]
+        self.v_title.set("第 %d / %d 步 · %s" % (self.step + 1, len(ids), titles[self.step]))
+        self.v_hint.set(hints[self.step])
 
-        builder = getattr(self, "step_" + sid)
-        builder()
+        flow.build(sid)
 
-        issues = issues_for(sid, self.model)
-        if sid == "export":
-            self.v_status.set("文件已准备好，可以保存或复制。")
+        issues = [x for x in (flow.issues(sid) or []) if not is_advisory(x)]
+        last = (self.step == len(ids) - 1)
+        if last:
+            self.v_status.set(getattr(flow, "last_hint", "文件已准备好，可以保存、复制或直连 MIDAS。"))
             self.lbl_status.configure(style="Ok.TLabel")
         elif issues:
             self.v_status.set("请先修正：" + "；".join(issues[:3]) + (" …" if len(issues) > 3 else ""))
@@ -1826,17 +1519,24 @@ class Wizard(tk.Tk):
             self.v_status.set("这一步没问题，可以进入下一步。")
             self.lbl_status.configure(style="Ok.TLabel")
 
-        self.btn_next.configure(state=("disabled" if (issues or sid == "export") else "normal"),
-                                text=("生成 MCT 文件" if self.step == len(STEP_IDS) - 2 else "确定，下一步"))
+        self.btn_next.configure(state=("disabled" if (issues or last) else "normal"),
+                                text=("生成成果" if self.step == len(ids) - 2 else "确定，下一步"))
         self.btn_prev.configure(state=("disabled" if self.step == 0 else "normal"))
         self.refresh_step_list()
         self.canvas.yview_moveto(0)
 
     def refresh_step_list(self):
+        flow = self.flow()
+        ids = list(flow.step_ids)
+        titles = list(flow.step_titles)
         self.step_list.delete(0, "end")
-        for i, sid in enumerate(STEP_IDS):
-            mark = "✓" if (i < self.step and not issues_for(sid, self.model)) else "　"
-            self.step_list.insert("end", "%s %d. %s" % (mark, i + 1, STEP_TITLES[i]))
+        for i, sid in enumerate(ids):
+            try:
+                ok = not [x for x in (flow.issues(sid) or []) if not is_advisory(x)]
+            except Exception:                                   # noqa: BLE001
+                ok = False
+            mark = "✓" if (i < self.step and ok) else "　"
+            self.step_list.insert("end", "%s %d. %s" % (mark, i + 1, titles[i]))
         self.step_list.itemconfigure(self.step, background="#dce8f7")
         self.step_list.selection_clear(0, "end")
         self.step_list.selection_set(self.step)
@@ -1855,12 +1555,14 @@ class Wizard(tk.Tk):
             self.render()
 
     def on_next(self):
-        issues = [x for x in issues_for(STEP_IDS[self.step], self.model) if not is_advisory(x)]
+        flow = self.flow()
+        ids = list(flow.step_ids)
+        issues = [x for x in (flow.issues(ids[self.step]) or []) if not is_advisory(x)]
         if issues:
             messagebox.showwarning("还不能进入下一步", "\n".join(issues[:8]))
             return
         self.save_session()
-        if self.step < len(STEP_IDS) - 1:
+        if self.step < len(ids) - 1:
             self.step += 1
             self.render()
 
@@ -1924,7 +1626,6 @@ class Wizard(tk.Tk):
         if ne < 1:
             messagebox.showwarning("缺单元", "先在第 2 步把单元填好。")
             return
-        # 名字保持纯 ASCII：*STLDCASE 写出去的就是这几个，荷载引用也得对得上
         names = ["LL-%d" % (i + 1) for i in range(len(targets) + 1)]
         keep_lc = [l for l in m["loadcases"] if txt(l.get("name")).strip() not in names]
         m["loadcases"] = keep_lc
@@ -1951,51 +1652,57 @@ class Wizard(tk.Tk):
                             (len(names), "、".join(names),
                              "\n".join("  %s  %s" % (n, w) for n, (_, w) in zip(names, targets))))
     def on_clear_step(self):
-        sid = STEP_IDS[self.step]
-        keys = STEP_CLEAR_KEYS.get(sid)
-        if not keys:
+        flow = self.flow()
+        sid = list(flow.step_ids)[self.step]
+        title = flow.clear_title(sid) if hasattr(flow, "clear_title") else ""
+        if not title:
             messagebox.showinfo("提示", "这一步是生成成果，没有可清空的数据。")
             return
-        zh = {"nodes": "支点", "elements": "单元", "materials": "材料", "sections": "截面",
-              "supports": "支承", "loadcases": "荷载工况与自重", "loads": "节点荷载和梁单元荷载"}
-        if not messagebox.askyesno("清空本步", "确定清空「%s」这一步的输入吗？" % zh.get(sid, sid)):
+        if not messagebox.askyesno("清空本步", "确定清空「%s」这一步的输入吗？" % title):
             return
-        for k in keys:
-            self.model[k] = []
-        if sid == "loadcases":
-            self.model["selfweight"] = {"on": True, "lc": "", "x": "0", "y": "0", "z": "-1", "group": ""}
-        for attr in ("v_span_start", "v_span_dx", "v_span_n"):
-            if hasattr(self, attr):
-                delattr(self, attr)
+        flow.clear(sid)
+        self._mode_cache[self.mode] = self.model
         self.save_session()
         self.bundle_files = None
         self.render()
-        self.v_status.set("已清空「%s」，可以重新填。" % zh.get(sid, sid))
+        self.v_status.set("已清空「%s」，可以重新填。" % title)
         self.lbl_status.configure(style="Ok.TLabel")
 
     def on_reset(self):
-        if messagebox.askyesno("清空全部", "确定清空所有步骤的输入吗？\n\n会变成空模型（0 个支点 / 单元 / 材料 / 截面），从头开始填。"):
-            self.model = empty_model()
-            self.v_project.set("")
-            self.v_force.set(self.model["project"]["force"])
-            self.v_dist.set(self.model["project"]["dist"])
-            self.v_styp.set(dict(STYPES)[self.model["project"]["styp"]])
-            self.step = 0
-            self.saved_path = None
-            self.bundle_files = None
-            self.result_files = None
-            for attr in ("v_fname", "v_outdir", "v_encoding", "v_compat", "v_altmct"):
-                if hasattr(self, attr):
-                    delattr(self, attr)
-            self.save_session()
-            self.render()
+        if not messagebox.askyesno("清空全部", "确定清空所有步骤的输入吗？\n\n"
+                                   "会变成本流程的初始模型（不是空模型的话会回到默认参数），从头开始填。"):
+            return
+        flow = self.flow()
+        try:
+            self.model = flow.reset_model() if hasattr(flow, "reset_model") else flow.default_model()
+        except Exception as exc:                                # noqa: BLE001
+            messagebox.showerror("清空失败", str(exc))
+            return
+        prj = self.model.setdefault("project", {})
+        self.v_project.set(prj.get("name", ""))
+        self.v_force.set(prj.get("force", "KN"))
+        self.v_dist.set(prj.get("dist", "M"))
+        self.v_styp.set(dict(STYPES).get(prj.get("styp", "1"), STYPES[0][1]))
+        self.step = 0
+        self.saved_path = None
+        self.bundle_files = None
+        self.result_files = None
+        for attr in ("v_fname", "v_outdir", "v_encoding", "v_compat", "v_altmct"):
+            if hasattr(self, attr):
+                delattr(self, attr)
+        self._mode_cache[self.mode] = self.model
+        self.save_session()
+        self.render()
 
     # ---------------- 会话存取 ----------------
     def save_session(self):
         try:
             os.makedirs(WORK_DIR, exist_ok=True)
+            models = dict(getattr(self, "_mode_cache", {}) or {})
+            models[self.mode] = self.model
+            payload = {"format": 2, "mode": self.mode, "models": models}
             with open(SESSION_FILE, "w", encoding="utf-8") as fh:
-                json.dump(self.model, fh, ensure_ascii=False, indent=2)
+                json.dump(payload, fh, ensure_ascii=False, indent=2)
         except OSError:
             pass
 
@@ -2003,14 +1710,40 @@ class Wizard(tk.Tk):
         try:
             with open(SESSION_FILE, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
-            if isinstance(data, dict) and "nodes" in data:
-                self.model = ensure_model(data)
-                self.v_project.set(txt(self.model["project"].get("name")))
-                self.v_force.set(self.model["project"].get("force", "KN"))
-                self.v_dist.set(self.model["project"].get("dist", "M"))
-                self.v_styp.set(dict(STYPES).get(self.model["project"].get("styp", "1"), STYPES[0][1]))
         except (OSError, ValueError):
-            pass
+            return
+        if not isinstance(data, dict):
+            return
+        if data.get("format") == 2 and isinstance(data.get("models"), dict):
+            cache = {}
+            for code, model in data["models"].items():
+                if code in self._flow_classes and isinstance(model, dict):
+                    cache[code] = model
+            self._mode_cache = cache
+            mode = txt(data.get("mode")) or "beam"
+            self.mode = mode if (mode in self._flow_classes and mode in cache) else "beam"
+            if self.mode not in cache:
+                self.model = self._flow_classes[self.mode](self).default_model()
+                cache[self.mode] = self.model
+            else:
+                self.model = cache[self.mode]
+        elif "nodes" in data or "arch" in data:
+            # 旧版会话文件：只有一份模型
+            code = "arch" if "arch" in data else "beam"
+            if code not in self._flow_classes:
+                code = "beam"
+            self.mode = code
+            self.model = data
+            self._mode_cache = {code: data}
+        else:
+            return
+        if hasattr(self, "v_flow"):
+            self.v_flow.set(self._flow_label_of(self.mode))
+        prj = self.model.setdefault("project", {})
+        self.v_project.set(txt(prj.get("name")))
+        self.v_force.set(prj.get("force", "KN"))
+        self.v_dist.set(prj.get("dist", "M"))
+        self.v_styp.set(dict(STYPES).get(prj.get("styp", "1"), STYPES[0][1]))
 
     # ==================================================================
     # 各步骤的界面
@@ -2137,7 +1870,7 @@ class Wizard(tk.Tk):
             if mode not in ("spec", "db", "user"):
                 mode = "spec" if mat.get("spec") in MATERIAL_SPECS else "user"
                 mat["mode"] = mode
-            mtype = mat.get("type") if mat.get("type") in ("CONC", "STEEL", "USER") else "CONC"
+            mtype = mat.get("type") if mat.get("type") in ("CONC", "STEEL") else "CONC"
             mat["type"] = mtype
 
             ttk.Label(grid, text="材料 %d" % (i + 1)).grid(row=r, column=0, sticky="w", pady=(6, 0))
@@ -2259,7 +1992,9 @@ class Wizard(tk.Tk):
     # -------- 4. 截面 --------
     def step_sections(self):
         box = self._card("截面列表")
-        choices = ["%s · %s" % (s[0], s[1]) for s in SHAPES] + [CAD_SHAPE + " · 自定义（导入 CAD 文件）"]
+        choices = (["%s · %s" % (s[0], s[1]) for s in SHAPES]
+                   + [TS_SHAPE + " · 变截面（i/j 端各引用一个等截面）",
+                      CAD_SHAPE + " · 自定义（导入 CAD 文件）"])
         g = self._table(box, ["截面", "名称", "形状", "尺寸（单位 m）", "偏心 / 剪切 / 翘曲", ""])
         for i, sec in enumerate(self.model["sections"]):
             r = i * 4 + 1
@@ -2311,6 +2046,9 @@ class Wizard(tk.Tk):
         ttk.Button(btns, text="添加自定义截面（CAD 文件）", command=lambda: self._add_row("sections", {
             "name": "自定义截面", "shape": CAD_SHAPE, "dims": [], "offset": "CT", "shear": "YES",
             "warp": "NO", "file": "", "unit": "0.001", "props": None})).pack(side="left", padx=(8, 0))
+        ttk.Button(btns, text="添加变截面（两端各引用一个等截面）", command=lambda: self._add_row("sections", {
+            "name": "变截面", "shape": TS_SHAPE, "dims": [], "offset": "CT", "shear": "YES",
+            "warp": "NO", "i_sect": "", "j_sect": "", "mirror": False})).pack(side="left", padx=(8, 0))
 
         box2 = self._card("截面分段分配（可选）：把某段单元指定给某个截面")
         if "sec_assign" not in self.model:
@@ -2527,7 +2265,13 @@ class Wizard(tk.Tk):
         sec = self.model["sections"][idx]
         code = self._shape_code(sec)
         sec["shape"] = code
-        if code != CAD_SHAPE:
+        if code == TS_SHAPE:
+            sec.setdefault("i_sect", "")
+            sec.setdefault("j_sect", "")
+            sec.setdefault("mirror", False)
+            if not txt(sec.get("offset")).strip():
+                sec["offset"] = "CT"
+        elif code != CAD_SHAPE:
             shape = SHAPE_BY_CODE[code]
             dims = sec.get("dims") or []
             while len(dims) < len(shape[2]):
@@ -2554,6 +2298,177 @@ class Wizard(tk.Tk):
         ttk.Button(btns, text="添加一个支承", command=lambda: self._add_row("supports", {
             "nodes": "", "dx": True, "dy": True, "dz": True, "rx": False, "ry": False, "rz": False, "group": ""})).pack(side="left")
         ttk.Button(btns, text="首尾节点设为铰支座", command=self._auto_supports).pack(side="left", padx=(8, 0))
+
+        # ---------- 节点连接（可选）：主从节点 / 弹性连接 ----------
+        c2 = self._card("节点连接（可选）：主从节点、弹性连接")
+        ttk.Label(c2, text="主从节点＝刚性连接，用来模拟刚性横梁、挂梁两端、塔梁固结（从节点跟随主节点的勾选自由度）；"
+                           "弹性连接＝两个节点之间加 6 向弹簧，可模拟支座、隔震装置、地基弹簧。",
+                  style="Hint.TLabel", wraplength=760, justify="left").pack(anchor="w", pady=(0, 6))
+
+        rl = self.model.setdefault("rigidlinks", [])
+        if rl:
+            g2 = self._table(c2, ["刚性连接", "主节点", "约束自由度（勾选＝从节点跟随）", "从节点号（可多个）", "边界组", ""])
+            for i, r in enumerate(rl):
+                row = i + 1
+                ttk.Label(g2, text="%d" % row).grid(row=row, column=0, sticky="w", padx=(0, 10))
+                self._cell(g2, ttk.Entry(g2, textvariable=self.svar(r, "master", r.get("master")), width=8), row, 1)
+                dofs = ttk.Frame(g2); dofs.grid(row=row, column=2, sticky="w", padx=(0, 10))
+                dof = r.setdefault("dof", {})
+                for k, lab in (("dx", "Dx"), ("dy", "Dy"), ("dz", "Dz"), ("rx", "Rx"), ("ry", "Ry"), ("rz", "Rz")):
+                    if k not in dof:
+                        dof[k] = True
+                    ttk.Checkbutton(dofs, text=lab, variable=self.bvar(dof, k, dof.get(k))).pack(side="left", padx=(0, 3))
+                self._cell(g2, ttk.Entry(g2, textvariable=self.svar(r, "slaves", r.get("slaves")), width=14), row, 3)
+                self._cell(g2, ttk.Entry(g2, textvariable=self.svar(r, "group", r.get("group")), width=10), row, 4)
+                ttk.Button(g2, text="删除", width=5, command=lambda _i=i: self._del_link("rigidlinks", _i)).grid(
+                    row=row, column=5, sticky="w")
+
+        el = self.model.setdefault("elasticlinks", [])
+        if el:
+            g3 = self._table(c2, ["弹性连接", "节点 1", "节点 2", "SDx", "SDy", "SDz", "SRx", "SRy", "SRz", "边界组", ""])
+            for i, e in enumerate(el):
+                row = i + 1
+                ttk.Label(g3, text="%d" % row).grid(row=row, column=0, sticky="w", padx=(0, 8))
+                self._cell(g3, ttk.Entry(g3, textvariable=self.svar(e, "n1", e.get("n1")), width=6), row, 1)
+                self._cell(g3, ttk.Entry(g3, textvariable=self.svar(e, "n2", e.get("n2")), width=6), row, 2)
+                for c, k in enumerate(("sdx", "sdy", "sdz", "srx", "sry", "srz"), start=3):
+                    self._cell(g3, ttk.Entry(g3, textvariable=self.svar(e, k, e.get(k)), width=9), row, c)
+                self._cell(g3, ttk.Entry(g3, textvariable=self.svar(e, "group", e.get("group")), width=9), row, 9)
+                ttk.Button(g3, text="删除", width=5, command=lambda _i=i: self._del_link("elasticlinks", _i)).grid(
+                    row=row, column=10, sticky="w")
+
+        lb = ttk.Frame(c2); lb.pack(fill="x", pady=(6, 0))
+        ttk.Button(lb, text="＋ 添加刚性连接（主从节点）", command=lambda: self._add_link("rigidlinks")).pack(side="left")
+        ttk.Button(lb, text="＋ 添加弹性连接", command=lambda: self._add_link("elasticlinks")).pack(side="left", padx=(8, 0))
+        ttk.Label(c2, text="刚度单位：力/长度（kN/m）和力·长度/弧度（kN·m/rad）；不约束的方向填 0。"
+                           "刚性连接一般 6 个自由度全勾；只连平动（如斜拉索与主梁）就只勾 Dx Dy Dz。",
+                  style="Opt.TLabel", wraplength=760, justify="left").pack(anchor="w", pady=(4, 0))
+
+        self._bearing_card(c2)
+
+    # ---------------- 板式橡胶支座刚度计算器 ----------------
+    def _bearing_vars(self):
+        """计算器的输入（存在模型里，切换流程/重开窗口都还在）。"""
+        bc = self.model.setdefault("bearing_calc", {})
+        for k, v in (("a", "300"), ("b", "600"), ("t1", "11"), ("te", "57"), ("Ge", "1.0"), ("S", "")):
+            bc.setdefault(k, v)
+        return bc
+
+    def _bearing_card(self, parent):
+        bc = self._bearing_vars()
+        box = ttk.Labelframe(parent, text="板式橡胶支座刚度计算（规范法，算完可一键填入上面的弹性连接）", padding=(8, 6))
+        box.pack(fill="x", pady=(10, 0))
+        r1 = ttk.Frame(box); r1.pack(fill="x")
+        for lab, key, width in (("平面 a (mm)", "a", 6), ("平面 b (mm)", "b", 6),
+                                ("中间层橡胶厚 t1 (mm)", "t1", 6), ("橡胶层总厚 te (mm)", "te", 6),
+                                ("剪变模量 Ge (MPa)", "Ge", 6)):
+            ttk.Label(r1, text=lab).pack(side="left", padx=(0, 2))
+            ttk.Entry(r1, textvariable=self.svar(bc, key, bc.get(key)), width=width).pack(side="left", padx=(0, 10))
+        r2 = ttk.Frame(box); r2.pack(fill="x", pady=(4, 0))
+        ttk.Label(r2, text="形状系数 S（留空＝按 S = a·b / [2·t1·(a+b)] 自动算；也可按 GJZ 规格表手填）").pack(side="left")
+        ttk.Entry(r2, textvariable=self.svar(bc, "S", bc.get("S")), width=8).pack(side="left", padx=(6, 0))
+        r3 = ttk.Frame(box); r3.pack(fill="x", pady=(6, 0))
+        ttk.Button(r3, text="① 计算刚度", command=self._bearing_calc).pack(side="left")
+        ttk.Button(r3, text="② 填入「弹性连接」", command=self._bearing_fill).pack(side="left", padx=(8, 0))
+        ttk.Label(r3, text="（竖向刚度填 SDx；连接节点顺序决定局部 x 轴：节点 1 → 节点 2 为 x）",
+                  style="Opt.TLabel").pack(side="left", padx=(8, 0))
+        self.v_bear_result = tk.StringVar(value="填入尺寸后点「计算刚度」。")
+        ttk.Label(box, textvariable=self.v_bear_result, style="Hint.TLabel", wraplength=860,
+                  justify="left").pack(anchor="w", pady=(4, 0))
+
+    @staticmethod
+    def _bearing_numbers(bc):
+        """按课件第 52/138 页（P66）公式 + 桥规取值算支座 6 个刚度。
+
+        S = a·b / [2·t1·(a+b)]（矩形）；Ee = 5.4·Ge·S²；A_k = 5/6·A；
+        SDx = Ee·A/te，SDy=SDz = Ge·A_k/te，SRx = Ge·Ip/te，SRy = Ee·Iy/te，SRz = Ee·Iz/te。
+        """
+        a = float(bc.get("a") or 0); b = float(bc.get("b") or 0)
+        t1 = float(bc.get("t1") or 0); te = float(bc.get("te") or 0)
+        Ge = float(bc.get("Ge") or 0)
+        s_txt = txt(bc.get("S")).strip()
+        S = float(s_txt) if s_txt else (a * b / (2.0 * t1 * (a + b)) if t1 > 0 and (a + b) > 0 else 0.0)
+        Ee = 5.4 * Ge * S * S
+        A = a * b / 1e6                                  # m2
+        Ak = A * 5.0 / 6.0                               # 矩形剪切面积
+        Iy = b * a ** 3 / 12.0 / 1e12                    # m4（绕 y 轴）
+        Iz = a * b ** 3 / 12.0 / 1e12                    # m4（绕 z 轴）
+        aa, bb = max(a, b), min(a, b)
+        r = bb / aa if aa > 0 else 0.0
+        Ip = aa * bb ** 3 * (1.0 / 3.0 - 0.21 * r * (1.0 - r ** 4 / 12.0)) / 1e12   # m4（矩形扭转常数）
+        return {"a": a, "b": b, "t1": t1, "te": te, "Ge": Ge, "S": S, "Ee": Ee,
+                "A": A, "Ak": Ak, "Iy": Iy, "Iz": Iz, "Ip": Ip}
+
+    def _bearing_text(self, d):
+        return ("S = %.4g，Ee = 5.4·Ge·S² = %.4g MPa，A = %.4g m²，A_k = %.4g m²\n"
+                "SDx（竖向/轴向）= %.4g kN/m    SDy = SDz（水平）= %.4g kN/m\n"
+                "SRx（绕轴向扭转）= %.4g kN·m/rad    SRy = %.4g    SRz = %.4g kN·m/rad"
+                % (d["S"], d["Ee"], d["A"], d["Ak"], d["Kx"], d["Ky"], d["Rx"], d["Ry"], d["Rz"]))
+
+    def _bearing_calc(self, quiet=False):
+        bc = self._bearing_vars()
+        try:
+            d = self._bearing_numbers(bc)
+        except (TypeError, ValueError):
+            if not quiet:
+                messagebox.showwarning("参数不对", "a、b、t1、te、Ge、S 都要填数字。")
+            return None
+        if min(d["a"], d["b"], d["te"], d["Ge"], d["S"]) <= 0:
+            if not quiet:
+                messagebox.showwarning("参数不对", "平面尺寸、te、Ge 都要大于 0；留空自动算 S 时 t1 也要大于 0。")
+            return None
+        te = d["te"] / 1000.0
+        ec = d["Ee"] * 1000.0                            # MPa → kN/m²
+        gc = d["Ge"] * 1000.0
+        d["Kx"] = ec * d["A"] / te
+        d["Ky"] = gc * d["Ak"] / te
+        d["Rx"] = gc * d["Ip"] / te
+        d["Ry"] = ec * d["Iy"] / te
+        d["Rz"] = ec * d["Iz"] / te
+        self._bearing_result = d
+        if hasattr(self, "v_bear_result"):
+            self.v_bear_result.set(self._bearing_text(d))
+        if not quiet:
+            self.v_status.set("支座刚度算好了：SDx=%.4g kN/m，SDy=SDz=%.4g kN/m（见卡片下方）。"
+                              % (d["Kx"], d["Ky"]))
+            self.lbl_status.configure(style="Ok.TLabel")
+        return d
+
+    def _bearing_fill(self):
+        d = self._bearing_calc(quiet=True)
+        if not d or not getattr(d, "get", None) or "Kx" not in d:
+            if not d:
+                messagebox.showwarning("参数不对", "先把 a、b、t1、te、Ge 填成大于 0 的数。")
+            return
+        result_text = self._bearing_text(d)
+        self.model.setdefault("elasticlinks", []).append({
+            "n1": "", "n2": "",
+            "sdx": numg(d["Kx"]), "sdy": numg(d["Ky"]), "sdz": numg(d["Ky"]),
+            "srx": numg(d["Rx"]), "sry": numg(d["Ry"]), "srz": numg(d["Rz"]),
+            "group": ""})
+        self.save_session()
+        self.render()
+        messagebox.showinfo("已填入弹性连接", "已在上面「弹性连接」里加了一行（节点号自己填）：\n\n"
+                            + result_text + "\n\n提示：竖向连接时节点 1→2 是局部 x 轴，SDx 就是竖向刚度。")
+
+    def _add_link(self, key):
+        if key == "rigidlinks":
+            self.model.setdefault("rigidlinks", []).append({
+                "master": "", "slaves": "",
+                "dof": {"dx": True, "dy": True, "dz": True, "rx": False, "ry": False, "rz": False},
+                "group": ""})
+        else:
+            self.model.setdefault("elasticlinks", []).append({
+                "n1": "", "n2": "", "sdx": "1e8", "sdy": "1e8", "sdz": "1e8",
+                "srx": "0", "sry": "0", "srz": "0", "group": ""})
+        self.render()
+
+    def _del_link(self, key, idx):
+        try:
+            self.model[key].pop(idx)
+        except (KeyError, IndexError):
+            return
+        self.render()
 
     def _auto_supports(self):
         n = len(self.model["nodes"])
@@ -2616,8 +2531,7 @@ class Wizard(tk.Tk):
                   style="Hint.TLabel").pack(anchor="w", pady=(6, 0))
 
     # -------- 7. 荷载 --------
-        if hasattr(self, "_lane_card"):
-            self._lane_card(box)
+        self._lane_card(box)
 
     def _toggle_loads_help(self):
         """第 7 步「说明」的展开/收起（状态记在实例上，切走再回来还是原样）。"""
@@ -2782,6 +2696,8 @@ class Wizard(tk.Tk):
         ttk.Label(line_e, text="把 MIDAS 导出的结果（txt/csv/xlsx）复制进当前工程文件夹，和模型放一起。",
                   style="Hint.TLabel").pack(side="left", padx=(10, 0))
 
+        self._analysis_card()
+
         running, api = midas_status()
         st = "MIDAS：%s；API：%s" % (
             "运行中" if running else "未运行",
@@ -2828,7 +2744,110 @@ class Wizard(tk.Tk):
         self.txt.insert("1.0", build_mct(self.model))
         self.txt.configure(state="disabled")
 
+    # ---------------- 分析设置（实验功能，默认不写） ----------------
+    def _an_get(self, kind, key, default=""):
+        d = (self.model.get("analysis") or {}).get(kind) or {}
+        v = d.get(key)
+        return default if v is None else v
+
+    def _an_var(self, kind, key, default=""):
+        v = tk.StringVar(value=txt(self._an_get(kind, key, default)))
+
+        def write(*_):
+            an = self.model.setdefault("analysis", {})
+            an.setdefault(kind, {})[key] = v.get()
+
+        v.trace_add("write", write)
+        return v
+
+    def _an_bvar(self, kind, key, default=False):
+        v = tk.BooleanVar(value=bool(self._an_get(kind, key, default)))
+
+        def write(*_):
+            an = self.model.setdefault("analysis", {})
+            an.setdefault(kind, {})[key] = bool(v.get())
+
+        v.trace_add("write", write)
+        return v
+
+    def _auto_pk(self):
+        """按《公路桥涵设计通用规范》车道荷载：Pk 在 5 m 内取 180 kN、50 m 以上取 360 kN，中间线性插值。"""
+        xs = []
+        for nd in self.model.get("nodes", []):
+            if is_num(nd.get("x")):
+                xs.append(float(nd["x"]))
+        if len(xs) < 2:
+            messagebox.showwarning("缺支点", "先在前面把支点填好，才能按跨径算 Pk。")
+            return
+        L = max(xs) - min(xs)
+        if L <= 5:
+            pk = 180.0
+        elif L >= 50:
+            pk = 360.0
+        else:
+            pk = 180.0 + (L - 5.0) * (360.0 - 180.0) / 45.0
+        self.v_an_pk.set(num(round(pk, 1)))
+        self.v_status.set("按计算跨径 %.3g m 算得 Pk = %.1f kN（规范：≤5 m 取 180，≥50 m 取 360，中间线性）。"
+                          % (L, round(pk, 1)))
+        self.lbl_status.configure(style="Ok.TLabel")
+
+    def _analysis_card(self, kinds=("moving", "eigen", "buckle")):
+        """第 8 步底部的「分析设置」：移动荷载 / 模态 / 屈曲（实验功能，默认不写）。
+
+        kinds 只画传进来的那几块：梁桥三块全画；拱桥 / 斜拉桥用 ("eigen", "buckle")。
+        """
+        zh = {"moving": "移动荷载", "eigen": "模态", "buckle": "屈曲"}
+        box = self._card("分析设置（可选）：%s —— 实验功能" % " / ".join(zh[k] for k in kinds))
+        ttk.Label(box, text="这几项照 MIDAS 官方 MCT 手册的字段写，本机没有可对照的导出样本，所以"
+                            "默认都不勾：不勾就一个字也不写，生成结果和以前完全一样。"
+                            "勾上后导入若报错，把 MIDAS 命令行号发作者，按行号改。",
+                  style="Hint.TLabel", wraplength=880, justify="left").pack(anchor="w", pady=(0, 8))
+
+        if "moving" in kinds:
+            ttk.Checkbutton(box, text="① 移动荷载（车道 + 车辆 + 移动荷载工况，对应第 06 讲）",
+                            variable=self._an_bvar("moving", "on", False)).pack(anchor="w")
+            r1 = ttk.Frame(box); r1.pack(fill="x", pady=(4, 0))
+            for lab, key, dflt, width in (("车道名", "lane", "LANE1", 10), ("偏心(m)", "ecc", "0", 7),
+                                          ("冲击系数0~0.3", "impact", "0", 6), ("车辆名", "vname", "CH-I", 10)):
+                ttk.Label(r1, text=lab).pack(side="left", padx=(0, 2))
+                ttk.Entry(r1, textvariable=self._an_var("moving", key, dflt), width=width).pack(side="left", padx=(0, 10))
+            r2 = ttk.Frame(box); r2.pack(fill="x", pady=(4, 0))
+            ttk.Label(r2, text="车道均布 qk (kN/m)").pack(side="left", padx=(0, 2))
+            ttk.Entry(r2, textvariable=self._an_var("moving", "qk", "10.5"), width=8).pack(side="left", padx=(0, 10))
+            ttk.Label(r2, text="集中 Pk (kN)").pack(side="left", padx=(0, 2))
+            self.v_an_pk = self._an_var("moving", "pk", "360")
+            ttk.Entry(r2, textvariable=self.v_an_pk, width=8).pack(side="left", padx=(0, 4))
+            ttk.Button(r2, text="按跨径算 Pk", command=self._auto_pk).pack(side="left", padx=(0, 10))
+            for lab, key, dflt, width in (("移动荷载工况名", "lc", "MV", 10), ("车辆组名", "vclass", "VC1", 8)):
+                ttk.Label(r2, text=lab).pack(side="left", padx=(0, 2))
+                ttk.Entry(r2, textvariable=self._an_var("moving", key, dflt), width=width).pack(side="left", padx=(0, 10))
+            ttk.Label(box, text="公路-I级：qk=10.5 kN/m；Pk 随跨径变（≤5 m 取 180 kN，≥50 m 取 360 kN，中间线性插值）。"
+                                "程序把车道铺在全部梁单元上，偏心按梁中心到车道中心的距离填。",
+                      style="Opt.TLabel", wraplength=880, justify="left").pack(anchor="w", pady=(2, 10))
+
+        if "eigen" in kinds:
+            r3 = ttk.Frame(box); r3.pack(fill="x", pady=(6, 0))
+            ttk.Checkbutton(r3, text="② 模态分析（特征值，对应第 07 讲）",
+                            variable=self._an_bvar("eigen", "on", False)).pack(side="left")
+            ttk.Label(r3, text="提取阶数").pack(side="left", padx=(10, 2))
+            ttk.Entry(r3, textvariable=self._an_var("eigen", "n", "10"), width=6).pack(side="left", padx=(0, 10))
+            ttk.Checkbutton(r3, text="旧版 4 字段写法（给老 MIDAS）",
+                            variable=self._an_bvar("eigen", "legacy", False)).pack(side="left")
+
+        if "buckle" in kinds:
+            r4 = ttk.Frame(box); r4.pack(fill="x", pady=(8, 0))
+            ttk.Checkbutton(r4, text="③ 屈曲分析（对应第 07 讲）",
+                            variable=self._an_bvar("buckle", "on", False)).pack(side="left")
+            ttk.Label(r4, text="模态数").pack(side="left", padx=(10, 2))
+            ttk.Entry(r4, textvariable=self._an_var("buckle", "n", "3"), width=6).pack(side="left", padx=(0, 10))
+            ttk.Label(r4, text="可变荷载（工况名 系数，例：DL 1.0）").pack(side="left")
+            ttk.Entry(r4, textvariable=self._an_var("buckle", "lcs", ""), width=34).pack(side="left", padx=(6, 0))
+
     # ---------------- 成果 / 工程 ----------------
+    def out_root(self):
+        """成果根目录（插件流程的 out_dir() 用它兜底）。"""
+        return WORK_DIR
+
     def _default_outdir(self):
         name = safe_name(self.model["project"].get("name") or "midas-model")
         return os.path.join(WORK_DIR, name)
@@ -2888,6 +2907,10 @@ class Wizard(tk.Tk):
         except (OSError, LookupError) as exc:
             messagebox.showerror("生成失败", str(exc))
             return
+        except Exception as exc:                    # 程序内部错误也要让人看得见
+            messagebox.showerror("生成失败（程序内部错误）",
+                                 "%s: %s\n\n把这段信息发给我，我照着修。" % (type(exc).__name__, exc))
+            return
         self.bundle_files = files
         self.saved_path = files[0][1]
         self.save_session()
@@ -2912,10 +2935,18 @@ class Wizard(tk.Tk):
         except (OSError, ValueError) as exc:
             messagebox.showerror("打开失败", str(exc))
             return
-        if not isinstance(data, dict) or "nodes" not in data:
+        if not isinstance(data, dict) or not isinstance(data.get("project"), dict):
             messagebox.showerror("打开失败", "这个文件不是向导工程文件。")
             return
+        code = txt(data.get("flow")) or ("arch" if "arch" in data else "beam")
+        if code not in self._flow_classes:
+            code = "beam"
+        self._mode_cache[self.mode] = self.model
+        self.mode = code
         self.model = data
+        self._mode_cache[code] = data
+        if hasattr(self, "v_flow"):
+            self.v_flow.set(self._flow_label_of(code))
         self.model.setdefault("project", {})
         self.model["project"]["outdir"] = self.model["project"].get("outdir") or os.path.dirname(path)
         for attr in ("v_fname", "v_outdir", "v_encoding", "v_compat", "v_altmct"):
@@ -2940,6 +2971,7 @@ class Wizard(tk.Tk):
         if not path:
             return
         try:
+            self.model["flow"] = self.mode          # 打开时靠它自动切回本流程
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(self.model, fh, ensure_ascii=False, indent=2)
         except OSError as exc:
@@ -3007,6 +3039,10 @@ class Wizard(tk.Tk):
                                  include_compat=self.v_altmct.get())
         except (OSError, LookupError) as exc:
             messagebox.showerror("生成失败", str(exc))
+            return None
+        except Exception as exc:                    # 程序内部错误也要让人看得见
+            messagebox.showerror("生成失败（程序内部错误）",
+                                 "%s: %s\n\n把这段信息发给我，我照着修。" % (type(exc).__name__, exc))
             return None
         self.bundle_files = files
         self.saved_path = files[0][1]
@@ -3200,229 +3236,932 @@ class Wizard(tk.Tk):
                 pass
 
 
-def safe_print(text=""):
-    """打印一行，遇到控制台编码装不下中文时也不会崩。
+    # ==================================================================
+    # 拱桥 · 施工阶段联合截面（第二条流程）
+    # ==================================================================
+    def _is_arch(self):
+        return getattr(self, "mode", "beam") == "arch"
 
-    Windows 中文控制台是 cp936，装得下；但英文/西欧语系的 Windows 控制台是
-    cp1252，`print("自检")` 会直接抛 UnicodeEncodeError 把程序打断。
-    GitHub 的 Windows CI runner 就是这种情况，实测在 `--selftest` 上崩过。
-    所以这里先试一次，失败就把这一行的中文换成 '?' 再打。
-    """
+    def _arch(self):
+        """取拱桥模型（当前模型不是拱桥就换默认拱桥模型）。"""
+        if "arch" not in self.model:
+            self.model = arch_core.default_model()
+        return self.model
+
+    def arch_stage_names(self):
+        return [txt(s.get("name")).strip() for s in self._arch().get("stages", [])]
+
+    def _switch_mode(self, mode):
+        """切换流程：每个流程各自保留自己的输入，切来切去不丢。"""
+        if mode == getattr(self, "mode", "beam") or mode not in self._flow_classes:
+            return
+        if mode == "arch" and arch_core is None:
+            messagebox.showerror("缺少文件", "同目录下找不到 arch_core.py，拱桥流程用不了。\n"
+                                             "把 arch_core.py 和本程序放在同一个文件夹里再试。")
+            if hasattr(self, "v_flow"):
+                self.v_flow.set(self._flow_label_of(self.mode))
+            return
+        cache = self._mode_cache
+        cache[self.mode] = self.model            # 存住当前流程的输入，切回来还在
+        self.mode = mode
+        self.model = cache.get(mode)
+        if self.model is None:
+            try:
+                self.model = self.flow().default_model()
+            except Exception as exc:                            # noqa: BLE001
+                import traceback
+                traceback.print_exc()
+                messagebox.showerror("流程初始化失败", "这个流程起不来：%s\n\n"
+                                     "多半是同目录下缺了它的引擎文件（flow_*.py / *_core.py）。" % exc)
+                self.mode = "beam"
+                self.model = cache.get("beam") or default_model()
+        cache[self.mode] = self.model
+        if hasattr(self, "v_flow"):
+            self.v_flow.set(self._flow_label_of(self.mode))
+        self.step = 0
+        self.bundle_files = None
+        self.saved_path = None
+        for attr in ("v_fname", "v_outdir", "v_encoding", "v_compat", "v_altmct"):
+            if hasattr(self, attr):
+                delattr(self, attr)
+        self.save_session()
+        self.render()
+
+    # ---------------- 校验 ----------------
+    def arch_issues(self, sid):
+        m = self._arch()
+        a = m.get("arch", {})
+        out = []
+        if sid == "arch_axis":
+            try:
+                L = float(a.get("L")); f = float(a.get("f"))
+            except (TypeError, ValueError):
+                return ["跨径和矢高都要填数字。"]
+            if L <= 0:
+                out.append("计算跨径要大于 0。")
+            if f <= 0:
+                out.append("计算矢高要大于 0。")
+            if f >= L:
+                out.append("矢高比跨径还大，检查一下单位（应为 m）。")
+            try:
+                n = int(float(a.get("n")))
+                if n < 8 or n > 400:
+                    out.append("单元数建议 8~400（现在 %d）。" % n)
+            except (TypeError, ValueError):
+                out.append("单元数要填整数。")
+            if a.get("type") == "catenary":
+                try:
+                    mm = float(a.get("m"))
+                    if mm <= 1.0:
+                        out.append("悬链线的拱轴系数 m 必须大于 1。")
+                    elif mm > 5:
+                        out.append("拱轴系数 m=%g 太大了（常用 1.1~3），确认一下。" % mm)
+                except (TypeError, ValueError):
+                    out.append("拱轴系数 m 要填数字。")
+        elif sid == "arch_section":
+            sec = arch_core.get_section(m)
+            out += sec.validate()
+            names = self.arch_stage_names()
+            for p in m.get("parts", []):
+                cs = txt(p.get("composite_stage")).strip()
+                if cs and cs not in names:
+                    out.append("部件「%s」的参与受力阶段「%s」不在阶段表里。" % (p.get("name"), cs))
+        elif sid == "arch_export":
+            if arch_core is not None:
+                out += analysis_core.issues(m, kinds=("eigen", "buckle"),
+                                            loadcase_names=arch_core.loadcase_names(m))
+        elif sid == "arch_stages":
+            stages = m.get("stages", [])
+            if not stages:
+                out.append("至少要有一个施工阶段。")
+            seen = set()
+            for i, st in enumerate(stages, start=1):
+                nm = txt(st.get("name")).strip()
+                if not nm:
+                    out.append("第 %d 个阶段没有名字。" % i)
+                elif nm in seen:
+                    out.append("阶段名「%s」重复了。" % nm)
+                seen.add(nm)
+                try:
+                    if float(st.get("days", 0)) <= 0:
+                        out.append("阶段「%s」的天数要大于 0。" % nm)
+                except (TypeError, ValueError):
+                    out.append("阶段「%s」的天数要填数字。" % nm)
+            for p in m.get("parts", []):
+                cs = txt(p.get("composite_stage")).strip()
+                if cs and cs not in seen:
+                    out.append("部件「%s」的参与受力阶段「%s」不在阶段表里。" % (p.get("name"), cs))
+            try:
+                if float(m.get("gamma")) <= 0:
+                    out.append("容重要大于 0 kN/m³。")
+            except (TypeError, ValueError):
+                out.append("容重要填数字（kN/m³，混凝土一般 24~26）。")
+            if m.get("creep"):
+                try:
+                    hv = float(m.get("humidity"))
+                    if hv < 0 or hv > 100:
+                        out.append("环境湿度要在 0~100 % 之间。")
+                except (TypeError, ValueError):
+                    out.append("环境湿度要填 0~100 之间的数字。")
+            for p in m.get("parts", []):
+                try:
+                    if float(p.get("age", 0)) < 0:
+                        out.append("部件「%s」的龄期不能是负数。" % p.get("name"))
+                except (TypeError, ValueError):
+                    out.append("部件「%s」的龄期要填数字（天）。" % p.get("name"))
+        return out
+
+    # ---------------- 第 1 步：拱轴线 ----------------
+    def step_arch_axis(self):
+        m = self._arch()
+        a = m["arch"]
+        box = self._card("拱轴线参数")
+        g = ttk.Frame(box); g.pack(fill="x", anchor="w")
+
+        # 拱轴类型
+        _type_names = [t[1] for t in arch_core.ARCH_TYPES]
+        _type_code = {t[0]: t[1] for t in arch_core.ARCH_TYPES}
+        _type_back = {t[1]: t[0] for t in arch_core.ARCH_TYPES}
+        ttk.Label(g, text="拱轴类型").grid(row=0, column=0, sticky="w", padx=(0, 4))
+        v_type = tk.StringVar(value=_type_code.get(a.get("type", "catenary"), "悬链线"))
+        cb = ttk.Combobox(g, textvariable=v_type, values=_type_names, width=8, state="readonly")
+        cb.grid(row=0, column=1, sticky="w", padx=(0, 18))
+
+        def _set_type(*_):
+            a["type"] = _type_back.get(v_type.get(), "catenary")
+            self.render()
+        cb.bind("<<ComboboxSelected>>", _set_type)
+
+        # 数值参数
+        _fields = [("计算跨径 L (m)", "L", 8), ("计算矢高 f (m)", "f", 8),
+                   ("拱轴系数 m", "m", 6), ("拱脚标高 (m)", "z0", 8), ("单元数", "n", 6)]
+        entries = []
+        col = 2
+        for lab, key, w in _fields:
+            ttk.Label(g, text=lab).grid(row=0, column=col, sticky="w", padx=(0, 4))
+            e = ttk.Entry(g, textvariable=self.svar(a, key, a.get(key)), width=w)
+            e.grid(row=0, column=col + 1, sticky="w", padx=(0, 18))
+            entries.append(e)
+            col += 2
+
+        # 拱脚约束
+        ttk.Label(g, text="拱脚约束").grid(row=1, column=0, sticky="w", padx=(0, 4), pady=(8, 0))
+        v_fix = tk.StringVar(value="无铰（固结）" if a.get("fixed", True) else "两铰")
+        cbf = ttk.Combobox(g, textvariable=v_fix, values=["无铰（固结）", "两铰"], width=10, state="readonly")
+        cbf.grid(row=1, column=1, sticky="w", padx=(0, 18), pady=(8, 0))
+
+        def _set_fix(*_):
+            a["fixed"] = (v_fix.get().startswith("无铰"))
+            self.render()
+        cbf.bind("<<ComboboxSelected>>", _set_fix)
+
+        # 摘要 + 预览（改数字立刻重画，不用点「下一步」）
+        def _axis_pts():
+            try:
+                return arch_core.arch_axis(float(a.get("L")), float(a.get("f")),
+                                           float(a.get("m", 1.6)), a.get("type", "catenary"),
+                                           int(float(a.get("n"))), float(a.get("z0", 0)))
+            except Exception:
+                return []
+
+        def _axis_info(p):
+            try:
+                ln = arch_core.arch_length(p)
+                return ("拱线长 %.2f m     拱顶标高 %.2f m     矢跨比 1/%.2f    节点 %d 个 / 单元 %d 个"
+                        % (ln, float(a.get("z0", 0)) + float(a.get("f")),
+                           float(a.get("L")) / float(a.get("f")) if float(a.get("f")) else 0,
+                           len(p), len(p) - 1))
+            except Exception:
+                return "参数还不完整"
+
+        pts = _axis_pts()
+        info_lbl = ttk.Label(box, text=_axis_info(pts) if pts else "参数还不完整", style="Ok.TLabel")
+        info_lbl.pack(anchor="w", pady=(8, 0))
+
+        prev = self._card("拱轴线预览（改参数自动刷新）")
+        cv = tk.Canvas(prev, height=190, bg="white", highlightthickness=1, highlightbackground="#cccccc")
+        cv.pack(fill="x")
+        self._draw_arch(cv, pts)
+
+        def _refresh_axis(*_):
+            p = _axis_pts()
+            self._draw_arch(cv, p)
+            info_lbl.configure(text=_axis_info(p) if p else "参数还不完整")
+
+        cv.bind("<Configure>", _refresh_axis)          # 第一次显示 / 窗口缩放时按真实大小重画
+        for _entry in entries:
+            _entry.bind("<KeyRelease>", _refresh_axis)  # 改数字时实时刷新
+            _entry.bind("<FocusOut>", _refresh_axis)
+        ttk.Label(prev, text="X 为跨径方向，Z 竖直向上；左拱脚在 X=0。", style="Hint.TLabel").pack(anchor="w", pady=(4, 0))
+
+    def _draw_arch(self, cv, pts):
+        cv.delete("all")
+        w = max(cv.winfo_width(), 640)
+        h = int(cv.winfo_height())
+        if h < 60:                       # 窗口还没排好版时，先按「要求的高度」画，别画到画布外面
+            h = int(cv.winfo_reqheight()) or 190
+        if not pts:
+            cv.create_text(w / 2, h / 2, text="（参数不完整，暂时画不出来）", fill="#999")
+            return
+        xs = [p[0] for p in pts]; zs = [p[1] for p in pts]
+        x0, x1 = min(xs), max(xs)
+        z0, z1 = min(zs), max(zs)
+        pad = 24
+        sx = (w - 2 * pad) / (x1 - x0 or 1)
+        sz = (h - 2 * pad) / ((z1 - z0) or 1)
+        s = min(sx, sz)
+        ox = pad + (w - 2 * pad - (x1 - x0) * s) / 2
+        oy = h - pad
+
+        def P(x, z):
+            return (ox + (x - x0) * s, oy - (z - z0) * s)
+
+        # 地面线
+        cv.create_line(P(x0 - (x1 - x0) * 0.05, z0), P(x1 + (x1 - x0) * 0.05, z0), fill="#aaa", dash=(4, 3))
+        # 拱轴
+        poly = []
+        for (x, z) in pts:
+            poly += list(P(x, z))
+        cv.create_line(*poly, fill="#2d7d46", width=3, smooth=False)
+        # 拱脚
+        for (x, z) in (pts[0], pts[-1]):
+            px, py = P(x, z)
+            cv.create_rectangle(px - 5, py - 5, px + 5, py + 5, fill="#c0392b", outline="")
+        # 跨径/矢高标注
+        p1, p2 = P(x0, z0), P(x1, z0)
+        cv.create_line(*p1, *p2, arrow="both", fill="#666")
+        cv.create_text((p1[0] + p2[0]) / 2, p1[1] + 12, text="跨径 %.2f m" % (x1 - x0), fill="#666")
+        pc = P((x0 + x1) / 2, z0 + (z1 - z0))
+        cv.create_line(pc[0], pc[1], pc[0], oy, arrow="both", fill="#666", dash=(3, 3))
+        cv.create_text(pc[0] + 30, (pc[1] + oy) / 2, text="矢高 %.2f m" % (z1 - z0), fill="#666")
+
+    # ---------------- 第 2 步：截面 ----------------
+    def step_arch_section(self):
+        m = self._arch()
+        _defaults = {"W": 5.2, "cells": 3, "cell_w": 1.2, "cell_h": 1.0,
+                     "t_top_pre": 0.10, "t_bot": 0.20, "t_out": 0.20,
+                     "t_in": 0.10, "t_joint": 0.30, "t_top_cip": 0.15}
+        if "box" not in m:
+            m["box"] = dict(_defaults)
+        b = m["box"]
+        box = self._card("截面参数（按多箱室箱形截面自动生成，单位 m）")
+        g = ttk.Frame(box); g.pack(fill="x", anchor="w")
+        _spec = [("总宽 W（0=自动）", "W", 8), ("箱室数", "cells", 6), ("箱室净宽", "cell_w", 8), ("箱室净高", "cell_h", 8),
+                 ("预制顶板厚", "t_top_pre", 8), ("底板厚", "t_bot", 8),
+                 ("外腹板厚", "t_out", 8), ("内腹板厚", "t_in", 8),
+                 ("纵缝宽", "t_joint", 8), ("现浇顶板厚", "t_top_cip", 8)]
+        for i, (lab, key, wd) in enumerate(_spec):
+            r, c = divmod(i, 5)
+            ttk.Label(g, text=lab).grid(row=r * 2, column=c, sticky="w", padx=(0, 4), pady=(4, 0))
+            ttk.Entry(g, textvariable=self.svar(b, key, b.get(key)), width=wd).grid(
+                row=r * 2 + 1, column=c, sticky="w", padx=(0, 14))
+
+        btn = ttk.Frame(box); btn.pack(fill="x", pady=(10, 0))
+        ttk.Button(btn, text="① 按参数重新生成截面", command=self._arch_regen_section).pack(side="left")
+        ttk.Label(btn, text="   生成后到下面改「参与受力阶段 / 龄期」即可；改参数要再点一次生成。",
+                  style="Hint.TLabel").pack(side="left")
+
+        # 预览（第一次显示 / 窗口缩放时按真实大小重画）
+        prev = self._card("截面预览（颜色区分施工部件）")
+        cv = tk.Canvas(prev, height=230, bg="white", highlightthickness=1, highlightbackground="#cccccc")
+        cv.pack(fill="x")
+        self._draw_section(cv, m)
+        cv.bind("<Configure>", lambda _e: self._draw_section(cv, self._arch()))
+
+        # 部件表
+        sec = arch_core.get_section(m)
+        sp = sec.props()
+        box2 = self._card("施工部件（谁先浇、谁后参与受力）")
+        info = ttk.Frame(box2); info.pack(fill="x")
+        ttk.Label(info, text="总面积 A = %.4f m²，形心高 %.4f m，Iyy = %.4f m⁴，Izz = %.4f m⁴，总宽 %.2f m，总高 %.2f m"
+                  % (sp["A"], sp["Cz"], sp["Iyy"], sp["Izz"], sp["B"], sp["H"]),
+                  style="Ok.TLabel").pack(anchor="w")
+        ttk.Label(info, text="总宽是按上面的尺寸自动排出来的；要凑成想要的总宽，改「箱室净宽」「纵缝宽」或「外腹板厚」再点一次生成。",
+                  style="Hint.TLabel").pack(anchor="w")
+
+        stages = self.arch_stage_names() or ["CS1"]
+        g2 = self._table(box2, ["部件", "名称", "面积 m²", "参与受力阶段", "龄期 d"])
+        for i, part in enumerate(m.get("parts", [])):
+            r = i + 1
+            ttk.Label(g2, text="部件 %d" % (i + 1)).grid(row=r, column=0, sticky="w", padx=(0, 12), pady=3)
+            self._cell(g2, ttk.Entry(g2, textvariable=self.svar(part, "name", part.get("name")), width=16), r, 1)
+            ttk.Label(g2, text="%.4f" % (sec.parts[i].area if i < len(sec.parts) else 0)).grid(
+                row=r, column=2, sticky="w", padx=(0, 12))
+            combo = ttk.Combobox(g2, textvariable=self.svar(part, "composite_stage",
+                                                            part.get("composite_stage", stages[0])),
+                                 values=stages, width=10, state="readonly")
+            self._cell(g2, combo, r, 3)
+            self._cell(g2, ttk.Entry(g2, textvariable=self.svar(part, "age", part.get("age", 20)), width=8), r, 4)
+        ttk.Label(box2, text="部件 1 就是「预制部分」，它在第一个阶段就参与受力，所以阶段那一栏可以不管；"
+                             "后面每个部件选它硬化后开始参与受力的阶段。",
+                  style="Hint.TLabel", wraplength=760, justify="left").pack(anchor="w", pady=(6, 0))
+
+
+    def _arch_regen_section(self):
+        m = self._arch()
+        b = m.get("box", {})
+        try:
+            sec = arch_core.box_parts(
+                W=float(b.get("W", 5.2)), cells=int(float(b.get("cells", 3))),
+                cell_w=float(b.get("cell_w", 1.2)), cell_h=float(b.get("cell_h", 1.0)),
+                t_top_pre=float(b.get("t_top_pre", 0.10)), t_bot=float(b.get("t_bot", 0.20)),
+                t_out=float(b.get("t_out", 0.20)), t_in=float(b.get("t_in", 0.10)),
+                t_joint=float(b.get("t_joint", 0.30)), t_top_cip=float(b.get("t_top_cip", 0.15)),
+                material=m.get("material", "C50"))
+        except (TypeError, ValueError) as exc:
+            messagebox.showwarning("参数不对", "截面参数都要填数字：%s" % exc)
+            return
+        stages = self.arch_stage_names() or ["CS1", "CS2", "CS3", "CS4"]
+        comp = [stages[0],
+                stages[min(2, len(stages) - 1)] if len(stages) > 1 else stages[0],
+                stages[min(3, len(stages) - 1)] if len(stages) > 1 else stages[0]]
+        ages = [stages[0], 20, 30]
+        m["box"] = dict(m.get("box") or {})
+        m["box"].update({"cells": b.get("cells"), "cell_w": b.get("cell_w"), "cell_h": b.get("cell_h"),
+                         "t_top_pre": b.get("t_top_pre"), "t_bot": b.get("t_bot"),
+                         "t_out": b.get("t_out"), "t_in": b.get("t_in"),
+                         "t_joint": b.get("t_joint"), "t_top_cip": b.get("t_top_cip")})
+        m["parts"] = [
+            {"name": p.name, "rects": [list(r) for r in p.rects],
+             "composite_stage": comp[k] if k < len(comp) else stages[0],
+             "age": 5 if k == 0 else (20 if k == 1 else 30)}
+            for k, p in enumerate(sec.parts)]
+        m["box"] = sec.box
+        m["section_name"] = sec.name
+        self.save_session()
+        self.render()
+
+    def _draw_section(self, cv, m):
+        cv.delete("all")
+        try:
+            sec = arch_core.get_section(m)
+        except Exception:
+            return
+        if not sec.parts:
+            return
+        x1, x2, z1, z2 = sec.bbox
+        w = max(cv.winfo_width(), 640)
+        h = int(cv.winfo_height())
+        if h < 60:                       # 同上：先按要求高度画
+            h = int(cv.winfo_reqheight()) or 230
+        pad = 30
+        s = min((w - 2 * pad) / ((x2 - x1) or 1), (h - 2 * pad) / ((z2 - z1) or 1))
+
+        def P(x, z):
+            return (pad + (x - x1) * s, h - pad - (z - z1) * s)
+
+        colors = ["#cfe3f7", "#f7e0cf", "#d7f0d9", "#efe0f7", "#f7f7d0"]
+        for k, part in enumerate(sec.parts):
+            for (a, b_, c, d) in part.rects:
+                p1, p2 = P(a, d), P(b_, c)
+                cv.create_rectangle(p1[0], p1[1], p2[0], p2[1],
+                                    fill=colors[k % len(colors)], outline="#333")
+            # 图例
+            lx = w - 150
+            ly = 18 + k * 20
+            cv.create_rectangle(lx, ly, lx + 14, ly + 12, fill=colors[k % len(colors)], outline="#333")
+            cv.create_text(lx + 20, ly + 6, text="部件 %d：%s" % (k + 1, part.name), anchor="w")
+        # 尺寸标注
+        cv.create_line(*P(x1, z1), *P(x2, z1), arrow="both", fill="#666")
+        cv.create_text((P(x1, z1)[0] + P(x2, z1)[0]) / 2, P(x1, z1)[1] + 12,
+                       text="总宽 %.3f m" % (x2 - x1), fill="#666")
+        cv.create_line(*P(x2, z1), *P(x2, z2), arrow="both", fill="#666")
+        cv.create_text(P(x2, z2)[0] + 26, (P(x2, z1)[1] + P(x2, z2)[1]) / 2,
+                       text="高 %.3f m" % (z2 - z1), fill="#666")
+
+    # ---------------- 第 3 步：材料与施工阶段 ----------------
+    def step_arch_stages(self):
+        m = self._arch()
+        box = self._card("材料与时间依存")
+        g = ttk.Frame(box); g.pack(fill="x", anchor="w")
+        ttk.Label(g, text="混凝土等级").grid(row=0, column=0, sticky="w", padx=(0, 4))
+        mats = [k for k in arch_core.E_CONC]
+        ttk.Combobox(g, textvariable=self.svar(m, "material", m.get("material", "C50")),
+                     values=mats, width=8, state="readonly").grid(row=1, column=0, sticky="w", padx=(0, 24))
+        ttk.Label(g, text="容重 (kN/m³)").grid(row=0, column=1, sticky="w", padx=(0, 4))
+        ttk.Entry(g, textvariable=self.svar(m, "gamma", m.get("gamma", 25)), width=8).grid(
+            row=1, column=1, sticky="w", padx=(0, 24))
+        ttk.Label(g, text="环境湿度 (%)").grid(row=0, column=2, sticky="w", padx=(0, 4))
+        ttk.Entry(g, textvariable=self.svar(m, "humidity", m.get("humidity", 70)), width=8).grid(
+            row=1, column=2, sticky="w", padx=(0, 24))
+        v_creep = tk.BooleanVar(value=bool(m.get("creep")))
+
+        def _set_creep():
+            m["creep"] = bool(v_creep.get())
+            self.save_session()
+
+        ttk.Checkbutton(g, text="考虑收缩徐变（时间依存，CEB-FIP）", variable=v_creep,
+                        command=_set_creep).grid(row=1, column=3, sticky="w")
+        ttk.Label(box, justify="left", wraplength=820, style="Hint.TLabel",
+                  text="材料等级影响弹性模量和 28 天抗压强度；容重影响自重和湿重（湿重 = 后浇部件面积×容重，程序自动加/卸）。\n"
+                       "勾选「收缩徐变」后，程序会写 CEB-FIP 时间依存材料（*TDM-TYPE / *TDM-ELAST / *TDM-LINK），"
+                       "并在施工阶段分析控制里打开时间依存开关；分析会比不勾选慢一些。环境湿度只在勾选时起作用（默认 70%）。"
+                  ).pack(anchor="w", pady=(10, 0))
+
+        box2 = self._card("施工阶段")
+        g2 = self._table(box2, ["阶段", "名称", "持续天数", "这一步在做什么"])
+        for i, st in enumerate(m.get("stages", [])):
+            r = i + 1
+            ttk.Label(g2, text="阶段 %d" % (i + 1)).grid(row=r, column=0, sticky="w", padx=(0, 12), pady=3)
+            self._cell(g2, ttk.Entry(g2, textvariable=self.svar(st, "name", st.get("name")), width=10), r, 1)
+            self._cell(g2, ttk.Entry(g2, textvariable=self.svar(st, "days", st.get("days")), width=8), r, 2)
+            self._cell(g2, ttk.Entry(g2, textvariable=self.svar(st, "desc", st.get("desc")), width=46), r, 3)
+        bar = ttk.Frame(box2); bar.pack(fill="x", pady=(8, 0))
+        ttk.Button(bar, text="增加一个阶段", command=self._arch_add_stage).pack(side="left")
+        ttk.Button(bar, text="按部件自动重排阶段", command=self._arch_reset_stages).pack(side="left", padx=(8, 0))
+        ttk.Label(bar, text="   默认流程：预制合龙 → 浇纵缝 → 纵缝硬化+浇顶板 → 顶板硬化。",
+                  style="Hint.TLabel").pack(side="left")
+
+    def _arch_add_stage(self):
+        m = self._arch()
+        m.setdefault("stages", []).append({"name": "CS%d" % (len(m["stages"]) + 1),
+                                           "days": 20, "age": 20, "desc": ""})
+        self.save_session(); self.render()
+
+    def _arch_reset_stages(self):
+        m = self._arch()
+        n = max(4, len(m.get("parts", [])) + 1)
+        names = ["CS%d" % (i + 1) for i in range(n)]
+        descs = ["预制拱圈安装、合龙", "浇筑纵缝混凝土（湿重）",
+                 "纵缝硬化并参与受力、浇筑顶板（湿重）", "顶板硬化、全截面成拱"]
+        m["stages"] = [{"name": names[i], "days": [5, 20, 20, 30][i] if i < 4 else 20,
+                        "age": [5, 20, 20, 30][i] if i < 4 else 20,
+                        "desc": descs[i] if i < len(descs) else ""} for i in range(n)]
+        for k, p in enumerate(m.get("parts", [])):
+            p["composite_stage"] = names[min(0 if k == 0 else k + 1, n - 1)]
+            p["age"] = [5, 20, 30][k] if k < 3 else 20
+        self.save_session(); self.render()
+
+    # ---------------- 第 4 步：生成 / 直连 ----------------
+    def step_arch_export(self):
+        m = self._arch()
+        if not hasattr(self, "v_arch_outdir"):
+            self.v_arch_outdir = tk.StringVar(value=m.get("project", {}).get("outdir") or
+                                              os.path.join(WORK_DIR, "拱桥成果"))
+        if not hasattr(self, "v_arch_fname"):
+            self.v_arch_fname = tk.StringVar(value=m.get("project", {}).get("name") or "拱桥模型")
+
+        box = self._card("生成成果")
+        line0 = ttk.Frame(box); line0.pack(fill="x")
+        ttk.Label(line0, text="输出文件夹").pack(side="left")
+        ttk.Entry(line0, textvariable=self.v_arch_outdir, width=56).pack(side="left", padx=(6, 6))
+        ttk.Button(line0, text="选择…", command=self._arch_pick_dir).pack(side="left")
+        ttk.Button(line0, text="打开", command=self._arch_open_dir).pack(side="left", padx=(6, 0))
+
+        line1 = ttk.Frame(box); line1.pack(fill="x", pady=(8, 0))
+        ttk.Label(line1, text="文件名").pack(side="left")
+        ttk.Entry(line1, textvariable=self.v_arch_fname, width=24).pack(side="left", padx=(6, 14))
+
+        line2 = ttk.Frame(box); line2.pack(fill="x", pady=(10, 0))
+        ttk.Button(line2, text="① 生成施工阶段 MCT", command=self._arch_gen_mct).pack(side="left")
+        ttk.Button(line2, text="② 生成一次成拱 MCT（对比）", command=self._arch_gen_onestep).pack(side="left", padx=(8, 0))
+        ttk.Button(line2, text="③ 直连 MIDAS：导入→分析→对比", command=self._arch_run_midas).pack(side="left", padx=(8, 0))
+        ttk.Button(line2, text="复制 MCT 文本", command=self._arch_copy_mct).pack(side="left", padx=(8, 0))
+
+        self._analysis_card(kinds=("eigen", "buckle"))
+
+        ttk.Label(box, text="「直连」需要 MIDAS 开着，并在 MIDAS 里点过：应用程序 → API Settings → 连接。\n"
+                            "流程：先另存当前文档 → 新建文档 → 导入本模型 → 保存 → 运行施工阶段分析 → 取回各阶段内力。",
+                  style="Hint.TLabel", justify="left", wraplength=760).pack(anchor="w", pady=(8, 0))
+
+        box2 = self._card("结果 / 对比（施工阶段 vs 一次成拱）")
+        self.arch_log = tk.Text(box2, height=16, wrap="none", font=("Consolas", 9))
+        sb = ttk.Scrollbar(box2, orient="vertical", command=self.arch_log.yview)
+        self.arch_log.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.arch_log.pack(side="left", fill="both", expand=True)
+        self.arch_log.insert("1.0", "（这里显示生成/分析结果。先点 ① 生成 MCT，再按需点 ③ 直连 MIDAS。）")
+        self.arch_log.configure(state="disabled")
+
+    def _arch_log(self, text):
+        if not hasattr(self, "arch_log"):
+            return
+        self.arch_log.configure(state="normal")
+        self.arch_log.insert("end", text + "\n")
+        self.arch_log.see("end")
+        self.arch_log.configure(state="disabled")
+
+    def _arch_pick_dir(self):
+        d = filedialog.askdirectory(title="选择成果文件夹", initialdir=self.v_arch_outdir.get() or WORK_DIR)
+        if d:
+            self.v_arch_outdir.set(d)
+
+    def _arch_open_dir(self):
+        d = self.v_arch_outdir.get()
+        try:
+            os.makedirs(d, exist_ok=True)
+            subprocess.Popen(["explorer", os.path.normpath(d)])
+        except OSError as exc:
+            messagebox.showerror("打不开", str(exc))
+
+    def _arch_ready(self):
+        """生成前把模型整理好（项目名/输出目录）。返回 (模型, 文件名前缀, 输出目录) 或 None。"""
+        probs = (self.arch_issues("arch_axis") + self.arch_issues("arch_section")
+                 + self.arch_issues("arch_stages") + self.arch_issues("arch_export"))
+        if probs:
+            messagebox.showwarning("先改完这些", "\n".join(probs[:10]))
+            return None
+        m = self._arch()
+        fname = safe_name(self.v_arch_fname.get() or "拱桥模型")
+        out = self.v_arch_outdir.get() or os.path.join(WORK_DIR, "拱桥成果")
+        m["project"]["name"] = fname
+        m["project"]["outdir"] = out
+        os.makedirs(out, exist_ok=True)
+        return m, fname, out
+
+    def _arch_gen_mct(self):
+        got = self._arch_ready()
+        if not got:
+            return None
+        m, fname, out = got
+        path = os.path.join(out, fname + ".mct")
+        try:
+            text = arch_core.build_mct(m)
+        except Exception as exc:                       # noqa: BLE001
+            messagebox.showerror("生成失败", "MCT 生成出错（参数里可能有异常值）：\n%s" % exc)
+            return None
+        try:
+            with open(path, "w", encoding="gbk", errors="replace", newline="") as fh:
+                fh.write(text)
+        except OSError as exc:
+            messagebox.showerror("生成失败", str(exc))
+            return None
+        rp = os.path.join(out, fname + "_数据表.txt")
+        try:
+            report = self._arch_report(m)
+            with open(rp, "w", encoding="gbk", errors="replace", newline="") as fh:
+                fh.write(report)
+        except Exception:                              # noqa: BLE001
+            pass
+        self.save_session()
+        self._arch_log("✔ 已生成：%s" % path)
+        self._arch_log("   数据表：%s" % rp)
+        self._arch_log("   模型：%d 个节点、%d 个单元、%d 个施工阶段"
+                       % (int(float(self._arch()["arch"]["n"])) + 1,
+                          int(float(self._arch()["arch"]["n"])),
+                          len(self._arch().get("stages", []))))
+        return path
+
+    def _arch_gen_onestep(self):
+        got = self._arch_ready()
+        if not got:
+            return None
+        m, fname, out = got
+        path = os.path.join(out, fname + "_一次成拱.mct")
+        try:
+            text = arch_core.build_one_step_mct(m)
+        except Exception as exc:                       # noqa: BLE001
+            messagebox.showerror("生成失败", "一次成拱 MCT 生成出错（参数里可能有异常值）：\n%s" % exc)
+            return None
+        try:
+            with open(path, "w", encoding="gbk", errors="replace", newline="") as fh:
+                fh.write(text)
+        except OSError as exc:
+            messagebox.showerror("生成失败", str(exc))
+            return None
+        self._arch_log("✔ 已生成一次成拱对比模型：%s" % path)
+        return path
+
+    def _arch_copy_mct(self):
+        got = self._arch_ready()
+        if not got:
+            return
+        m, fname, out = got
+        try:
+            text = arch_core.build_mct(m)
+        except Exception as exc:                       # noqa: BLE001
+            messagebox.showerror("生成失败", "MCT 生成出错（参数里可能有异常值）：\n%s" % exc)
+            return
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self._arch_log("✔ MCT 文本已复制到剪贴板（可直接粘到 MIDAS 的 MCT 窗口运行）")
+
+    def _arch_report(self, m):
+        L = []
+        a = m["arch"]; sec = arch_core.get_section(m); sp = sec.props()
+        L.append("拱桥 · 施工阶段联合截面 数据表")
+        L.append("=" * 66)
+        L.append("拱轴类型：%s   计算跨径：%s m   计算矢高：%s m   拱轴系数：%s"
+                 % (dict(arch_core.ARCH_TYPES).get(a.get("type"), a.get("type")),
+                    a.get("L"), a.get("f"), a.get("m")))
+        L.append("单元数：%s   拱脚标高：%s m   拱脚约束：%s"
+                 % (a.get("n"), a.get("z0"), "无铰" if a.get("fixed") else "两铰"))
+        L.append("混凝土：%s   容重：%s kN/m3" % (m.get("material"), m.get("gamma")))
+        if m.get("creep"):
+            L.append("收缩徐变：考虑（CEB-FIP 时间依存，环境湿度 %s%%）" % m.get("humidity", 70))
+        else:
+            L.append("收缩徐变：不考虑")
+        L.append("")
+        L.append("截面：总面积 %.4f m2，形心 (%.4f, %.4f) m，Iyy=%.4f，Izz=%.4f m4，总宽 %.3f，总高 %.3f"
+                 % (sp["A"], sp["Cy"], sp["Cz"], sp["Iyy"], sp["Izz"], sp["B"], sp["H"]))
+        for i, p in enumerate(sec.parts):
+            L.append("  部件%d %-8s A=%.4f m2，形心 (%.4f, %.4f)，参与受力：%s，龄期 %s d"
+                     % (i + 1, p.name, p.area, p.centroid[0], p.centroid[1],
+                        (m["parts"][i].get("composite_stage") if i < len(m.get("parts", [])) else ""),
+                        (m["parts"][i].get("age") if i < len(m.get("parts", [])) else "")))
+        L.append("")
+        L.append("施工阶段：")
+        for st in m.get("stages", []):
+            L.append("  %-6s 持续 %-4s d   %s" % (st.get("name"), st.get("days"), st.get("desc")))
+        L.append("")
+        L.append("说明：湿重按后浇部件面积×容重，自动加在浇筑阶段、硬化阶段卸除；")
+        L.append("      一次成拱模型把全部部件从第一阶段就按联合截面参与受力、只加自重。")
+        return "\r\n".join(L) + "\r\n"
+
+    # ---- 直连 MIDAS ----
+    def _arch_run_midas(self):
+        got = self._arch_ready()
+        if not got:
+            return
+        m, fname, out = got
+        if not messagebox.askyesno("直连 MIDAS",
+                                   "会新建一个 MIDAS 文档并导入模型、运行分析。\n"
+                                   "当前 MIDAS 里正在编辑的模型会先被「另存为」到成果文件夹，不会丢。\n\n继续吗？"):
+            return
+        self._arch_log("—— 开始直连 MIDAS ——")
+        self._arch_log("   收缩徐变：%s" % ("考虑（CEB-FIP 时间依存）" if self._arch().get("creep") else "不考虑"))
+        st, resp0 = api_call("GET", "/db/unit", timeout=10)
+        not_ready = (st is None) or (isinstance(resp0, dict) and "client does not exist" in str(resp0).lower())
+        if not_ready:
+            messagebox.showwarning(
+                "MIDAS 的 API 还没连上",
+                "程序连上了 MIDAS 的 API 服务，但 MIDAS 还没注册成客户端（client does not exist）。\n\n"
+                "请在 MIDAS 里点：应用程序 → API 设置 → 连接，看到「已连接」后再点一次「③ 直连 MIDAS」。\n"
+                "如果 MIDAS 里没有这个菜单，把 MIDAS 关掉重开一次再连。")
+            return
+        mct = self._arch_gen_mct()
+        if not mct:
+            return
+        os_mct = self._arch_gen_onestep()
+        try:
+            os.makedirs(out, exist_ok=True)
+        except OSError:
+            pass
+        # 先把当前文档另存为，避免 MIDAS 弹"是否保存"
+        api_call("POST", "/doc/SAVEAS", {"Argument": os.path.join(out, "_midas_当前文档.mcb")}, timeout=120)
+        api_call("POST", "/doc/NEW", {"Assign": {}}, timeout=60)
+        staged = self._arch_load_model(mct, os.path.join(out, fname + ".mcb"), "施工阶段模型 ")
+        if not staged:
+            messagebox.showerror("分析失败",
+                                 "施工阶段模型没有算出结果，具体看界面上的日志。\n\n"
+                                 "常见原因：模型参数不合理，或 MIDAS 里还没连 API。")
+            return
+        one = None
+        if os_mct and os.path.exists(os_mct):
+            api_call("POST", "/doc/NEW", {"Assign": {}}, timeout=60)
+            one = self._arch_load_model(os_mct, os.path.join(out, fname + "_一次成拱.mcb"), "一次成拱模型 ")
+        text = self._arch_compare(staged, one)
+        self._arch_log(text)
+        rp = os.path.join(out, fname + "_结果对比.txt")
+        try:
+            with open(rp, "w", encoding="gbk", errors="replace", newline="") as fh:
+                fh.write(text)
+            self._arch_log("✔ 对比结果已存：%s" % rp)
+            self._arch_log("✔ 模型文件已存：%s 和 %s"
+                           % (os.path.join(out, fname + ".mcb"),
+                              os.path.join(out, fname + "_一次成拱.mcb")))
+        except OSError:
+            pass
+
+    @staticmethod
+    def _arch_api_ok(st, resp):
+        """MAPI 成功时也会回 {"message": "MIDAS CIVIL NX command complete"}，不能当成错误。"""
+        return st == 200 and not (isinstance(resp, dict) and "error" in resp)
+
+    def _arch_load_model(self, mct_path, mcb_path, label=""):
+        """把一份 MCT 送进 MIDAS → 存盘 → 跑分析 → 取结果。失败返回 None。"""
+        st, resp = api_call("POST", "/doc/IMPORTMXT", {"Argument": mct_path}, timeout=300)
+        if not self._arch_api_ok(st, resp):
+            self._arch_log("%s导入失败：%s %s" % (label, st, str(resp)[:160]))
+            return None
+        self._arch_log("%s已导入（%s）" % (label, st))
+        st, resp = api_call("POST", "/doc/SAVEAS", {"Argument": mcb_path}, timeout=180)
+        if not self._arch_api_ok(st, resp):
+            self._arch_log("%s保存失败：%s %s" % (label, st, str(resp)[:160]))
+            return None
+        self._arch_log("%s正在分析（施工阶段要算一会儿）…" % label)
+        st, resp = api_call("POST", "/doc/ANAL", {"Assign": {}}, timeout=1800)
+        if not self._arch_api_ok(st, resp):
+            self._arch_log("%s分析失败：%s %s" % (label, st, str(resp)[:200]))
+            return None
+        self._arch_log("%s分析完成" % label)
+        res = self._arch_collect_results()
+        if not res:
+            self._arch_log("%s没取到结果表" % label)
+        return res
+
+    def _arch_collect_results(self):
+        """取施工阶段结果（OPT_CS）；返回 {表类型: 表} 或 None。"""
+        out = {}
+        for ttype in ("BEAMFORCE", "DISPLACEMENTG", "REACTIONG"):
+            body = {"Argument": {"TABLE_NAME": "SS_Table", "TABLE_TYPE": ttype,
+                                 "STYLES": {"FORMAT": "Fixed", "PLACE": 6}, "OPT_CS": True}}
+            st, resp = api_call("POST", "/post/TABLE", body, timeout=300)
+            tab = resp.get("SS_Table") if isinstance(resp, dict) else None
+            if tab:
+                out[ttype] = tab
+        return out or None
+
+    def _arch_compare(self, staged, one=None):
+        """把 施工阶段 vs 一次成拱 的内力/位移整理成对比表。"""
+        n_elem = int(float(self._arch()["arch"]["n"]))
+        crown = max(1, n_elem // 2)
+
+        def pick(results):
+            """{(阶段, 单元号): (N, My)}，只取拱顶和拱脚单元的 I 端。"""
+            out = {}
+            tab = (results or {}).get("BEAMFORCE") or {}
+            head = tab.get("HEAD") or []
+            if not head:
+                return out
+            try:
+                ie = head.index("Elem"); ist = head.index("Stage"); ip = head.index("Part")
+                ia = head.index("Axial"); im = head.index("Moment-y")
+            except ValueError:
+                return out
+            for r in tab.get("DATA") or []:
+                try:
+                    el = int(r[ie])
+                    if el not in (crown, 1) or "I[" not in str(r[ip]):
+                        continue
+                    out[(r[ist], el)] = (float(r[ia]), float(r[im]))
+                except Exception:
+                    continue
+            return out
+
+        L = ["拱圈内力对比（轴力 N：压为负；弯矩 My：kN·m）", "=" * 70]
+        s = pick(staged)
+        if not s:
+            L.append("（施工阶段模型没有取到内力表）")
+            return "\n".join(L)
+        valid = set(self.arch_stage_names())
+        stages = [stg for stg in dict.fromkeys(k[0] for k in s) if stg in valid] or \
+                 list(dict.fromkeys(k[0] for k in s))
+        L.append("%-10s %-6s %14s %16s" % ("阶段", "位置", "轴力 N (kN)", "弯矩 My (kN·m)"))
+        L.append("-" * 70)
+        for stg in stages:
+            for el, where in ((1, "拱脚"), (crown, "拱顶")):
+                if (stg, el) in s:
+                    n, my = s[(stg, el)]
+                    L.append("%-10s %-6s %14.1f %16.1f" % (stg, where, n, my))
+        o = pick(one)
+        if o:
+            L.append("-" * 70)
+            for el, where in ((1, "拱脚"), (crown, "拱顶")):
+                hit = [v for k, v in o.items() if k[1] == el]
+                if hit:
+                    L.append("%-10s %-6s %14.1f %16.1f" % ("一次成拱", where, hit[0][0], hit[0][1]))
+            if stages:
+                last = stages[-1]
+                L.append("")
+                L.append("差值（施工阶段最终 %s － 一次成拱）：" % last)
+                for el, where in ((1, "拱脚"), (crown, "拱顶")):
+                    hit = [v for k, v in o.items() if k[1] == el]
+                    if (last, el) in s and hit:
+                        n1, m1 = s[(last, el)]
+                        n0, m0 = hit[0]
+                        L.append("  %s：ΔN = %+9.1f kN，ΔMy = %+9.1f kN·m（%+.1f%%）"
+                                 % (where, n1 - n0, m1 - m0,
+                                    (m1 - m0) / abs(m0) * 100 if abs(m0) > 1e-9 else 0.0))
+        disp = (staged or {}).get("DISPLACEMENTG") or {}
+        if disp.get("HEAD") and disp.get("DATA"):
+            try:
+                hh = disp["HEAD"]; iz = hh.index("DZ"); ist = hh.index("Stage"); ino = hh.index("Node")
+                mz = {}
+                for r in disp["DATA"]:
+                    if int(r[ino]) == crown and r[ist] not in mz:
+                        mz[r[ist]] = float(r[iz])
+                if mz:
+                    L.append("")
+                    L.append("拱顶竖向位移：")
+                    for stg in stages:
+                        if stg in mz:
+                            L.append("  %-10s DZ = %8.2f mm" % (stg, mz[stg] * 1000))
+            except Exception:
+                pass
+        L.append("")
+        L.append("说明：施工阶段模型里后浇部件按各自阶段参与受力、湿重按荷载施加；")
+        L.append("      一次成拱模型里全截面从一开始就有效。差值就是施工方法带来的影响。")
+        return "\n".join(L)
+
+
+# ======================================================================
+# 命令行（给脚本 / CI 用；不带参数就是正常打开界面）
+# ======================================================================
+def flow_module_build_mct(code):
+    """返回 (flow 实例, build_mct 函数, data_report 函数)；流程不存在返回 (None, None, None)。"""
+    flows = discover_flows()
+    cls = flows.get(code)
+    if cls is None:
+        return None, None, None
+    inst = cls(None)
+    if code == "beam":
+        return inst, (lambda model: build_mct(model)), None
+    if code == "arch":
+        if arch_core is None:
+            return inst, None, None
+        return inst, arch_core.build_mct, getattr(arch_core, "data_report", None)
+    modname = dict(FLOW_PLUGIN_MODULES).get(code)
+    if not modname:
+        return inst, None, None
+    try:
+        mod = importlib.import_module(modname)
+    except Exception:                                      # noqa: BLE001
+        return inst, None, None
+    build = getattr(mod, "build_mct", None)
+    report = getattr(mod, "data_report", None)
+    if build is None:            # 有些流程把引擎函数只放在 <name>_core.py 里
+        import types
+        for value in vars(mod).values():
+            if isinstance(value, types.ModuleType) and hasattr(value, "build_mct"):
+                build = value.build_mct
+                report = report or getattr(value, "data_report", None)
+                break
+    return inst, build, report
+
+
+def _print_safe(text):
+    """控制台编码兜底（Windows GBK 控制台上打印不报错）。"""
     try:
         print(text)
     except UnicodeEncodeError:
-        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        enc = getattr(sys.stdout, "encoding", None) or "gbk"
         print(text.encode(enc, "replace").decode(enc, "replace"))
 
 
-def write_text_stdout(text):
-    """把整段文本写到 stdout，控制台编码装不下中文也不崩。
-
-    `--emit-mct` 不带 --outdir 时走这里。MCT 里有中文（注释和名称），
-    cp1252 控制台直接 `sys.stdout.write` 会抛 UnicodeEncodeError ——
-    GitHub 的 Windows runner 上实测崩在 CLI smoke test 这一步。
-
-    处理顺序：
-      1. 按控制台编码写，能写就写；
-      2. 写不了就按 GBK（MIDAS 读 MCT 就是这个编码）写字节；
-      3. GBK 都装不下（有 GBK 没有的字符）就按 UTF-8 写字节。
-    2 和 3 都绕开控制台编码，重定向到文件时结果也是对的。
-    """
-    try:
-        sys.stdout.write(text)
-        return
-    except UnicodeEncodeError:
-        pass
-    buf = getattr(sys.stdout, "buffer", None)
-    if buf is None:                                  # 没有底层 buffer，只能退让
-        enc = getattr(sys.stdout, "encoding", None) or "ascii"
-        sys.stdout.write(text.encode(enc, "replace").decode(enc, "replace"))
-        return
-    for enc in ("gbk", "utf-8"):
+def cli_selftest():
+    """--selftest：逐个流程生成默认模型 MCT + mct_lint 自检。返回 0=全过。"""
+    import mct_lint
+    flows = discover_flows()
+    if FLOW_LOAD_ERRORS:
+        _print_safe("插件加载错误：%s" % FLOW_LOAD_ERRORS)
+        return 1
+    names = getattr(flows.get("beam"), "label", "beam")
+    _print_safe("%s %s 自检（%d 条流程）" % (APP_TITLE, __version__, len(flows)))
+    bad = 0
+    for code, cls in flows.items():
+        label = getattr(cls, "label", code)
+        inst, build, _rep = flow_module_build_mct(code)
         try:
-            buf.write(text.encode(enc))
-            buf.flush()
-            return
-        except (UnicodeEncodeError, OSError):
+            model = inst.default_model() if inst is not None else None
+            txt = build(model) if build else ""
+        except Exception as exc:                           # noqa: BLE001
+            _print_safe("  FAIL  %-8s %s —— %s: %s" % (code, label, type(exc).__name__, exc))
+            bad += 1
             continue
-    buf.write(text.encode("utf-8", "replace"))       # 兜底，绝不抛异常
-    buf.flush()
-
-
-def selftest(verbose=True):
-    """不打开界面的自检：跑一遍核心算法和 MCT 生成。返回 0 = 全部通过。
-
-    主要给 CI 和「换台电脑先试试能不能用」准备 —— 这台机器不需要装 MIDAS。
-    """
-    fails = []
-
-    def check(name, cond, detail=""):
-        if verbose:
-            safe_print("  [%s] %s%s" % ("PASS" if cond else "FAIL", name,
-                                        ("  " + detail) if (detail and not cond) else ""))
-        if not cond:
-            fails.append(name)
-
-    if verbose:
-        safe_print("midas-mct-wizard %s 自检" % __version__)
-        safe_print("-" * 52)
-
-    # 1) 数字解析：nan / inf 不能让程序崩掉
-    check("is_num 拒绝 nan/inf/空", not is_num("nan") and not is_num("1e999") and not is_num(""))
-    check("num 把非法值写成 0", num("nan") == "0" and num("abc") == "0" and num("2.5") == "2.5")
-
-    # 2) 名称处理：中文原样保留（实测能导入），只清掉会破坏字段的逗号
-    check("aname 保留中文", aname("主梁", "SEC1") == "主梁")
-    check("aname 去掉逗号", "," not in aname("a,b"))
-    check("aname 空值用兜底名", aname("", "LC") == "LC")
-    check("aascii 仍然只用于边界组名", aascii("中支座") == "")
-
-    # 3) 截面特性：已知解析解
-    square = compute_section_props([[[0, 0], [2, 0], [2, 2], [0, 2]]])
-    check("实心方截面 A/I", square and abs(square["A"] - 4.0) < 1e-9
-          and abs(square["Iyy"] - 4.0 / 3.0) < 1e-9, str(square and square.get("A")))
-    box = compute_section_props([
-        [[0, 0], [2, 0], [2, 1.5], [0, 1.5]],
-        [[0.05, 0.05], [1.95, 0.05], [1.95, 1.45], [0.05, 1.45]]])
-    # 薄壁矩形管 Bredt 解析值 J = t(b-t)³(h-t)³/((b-t)+(h-t)) = 0.23514
-    check("空心箱形 J 与 Bredt 相符",
-          box and abs(box["Ixx"] - 0.235140) / 0.235140 < 0.10,
-          "J=%s" % (box and box.get("Ixx")))
-
-    # 4) MCT 生成：默认模型必须干净、自洽
-    m = default_model()
-    m["selfweight"]["lc"] = m["loadcases"][0]["name"]
-    m["beamloads"][0]["lc"] = m["loadcases"][0]["name"]
-    text = build_mct(m)
-    body = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith(";"))
-    check("MCT 非注释行没有逗号错位", all(l.count(",") >= 1 for l in body.splitlines() if l.startswith("   ")))
-    check("MCT 有 *ENDDATA", "*ENDDATA" in text)
-
-    # 4b) 中文名必须原样保留 —— 实测 MIDAS 认中文，不能给抹掉
-    m_cn = default_model()
-    m_cn["loadcases"] = [{"name": "自重", "type": "D", "desc": "自身重力"},
-                         {"name": "二期", "type": "L", "desc": ""}]
-    m_cn["materials"][0]["name"] = "混凝土"
-    m_cn["sections"][0]["name"] = "主梁"
-    m_cn["selfweight"] = {"on": True, "lc": "自重", "x": "0", "y": "0", "z": "-1", "group": ""}
-    m_cn["beamloads"][0]["lc"] = "二期"
-    cn_text = build_mct(m_cn)
-    check("中文工况名原样写出", "自重" in cn_text and "二期" in cn_text)
-    check("两个中文工况名不再撞车", cn_text.count("LC,") == 0 and cn_text.count("*USE-STLD, 自重") == 1)
-    check("中文材料名/截面名原样写出", "混凝土" in cn_text and "主梁" in cn_text)
-
-    # 5) 工况名一致：*STLDCASE 写什么，*USE-STLD 就得引用什么
-    m2 = default_model()
-    m2["loadcases"] = [{"name": "恒载,1", "type": "D", "desc": ""}]
-    m2["beamloads"][0]["lc"] = "恒载,1"
-    m2["selfweight"] = {"on": False, "lc": "", "x": "0", "y": "0", "z": "-1", "group": ""}
-    text2 = build_mct(m2)
-    declared, in_stldcase = [], False
-    for _line in text2.splitlines():
-        if _line.startswith("*"):
-            in_stldcase = _line.startswith("*STLDCASE")
+        if not txt or not txt.strip():
+            _print_safe("  FAIL  %-8s %s —— MCT 为空" % (code, label))
+            bad += 1
             continue
-        if in_stldcase and _line.startswith("   "):
-            declared.append(_line.split(",")[0].strip())
-    used = [l.split(",", 1)[1].strip() for l in text2.splitlines() if l.startswith("*USE-STLD,")]
-    check("荷载引用的工况名与 *STLDCASE 一致",
-          bool(declared) and bool(used) and all(u in declared for u in used),
-          "declared=%s used=%s" % (declared, used))
-
-    # 6) 校验器：明显越界的输入要被拦住
-    m3 = default_model()
-    m3["sec_assign"] = [{"from": "1", "to": "999", "sect": "99"}]
-    check("分段表越界会被校验拦住", bool(issues_for("sections", m3)))
-    m4 = default_model()
-    m4["nodes"] = [{"x": "nan", "y": "0", "z": "0", "note": ""}]
-    check("支点坐标写 nan 会被拦住", bool(issues_for("nodes", m4)))
-
-    # 7) 老工程/半截 JSON 不能把界面搞崩
-    partial = ensure_model({"nodes": [{"x": "1", "y": "0", "z": "0", "note": ""}]})
-    check("ensure_model 补齐缺失的键",
-          all(k in partial for k in ("project", "elements", "materials", "sections",
-                                     "supports", "loadcases", "selfweight", "beamloads")))
-    check("build_mct 能吃下补齐后的模型", bool(build_mct(partial)))
-    check("build_data_report 不再 NameError", bool(build_data_report(default_model())))
-
-    if verbose:
-        safe_print("-" * 52)
-        safe_print("结果：%s" % ("全部通过 ✓" if not fails
-                                else "%d 项未通过：%s" % (len(fails), "、".join(fails))))
-    return 1 if fails else 0
-
-
-def _install_error_handler(app):
-    """把没接住的异常显示出来。
-
-    这个程序通常用 pythonw.exe 启动 —— 它没有控制台，报错写到 stderr 等于没写，
-    用户只看到按钮点下去没反应。这里改成弹窗。
-    """
-    import traceback
-
-    def _report(exc, val, tb):
-        detail = "".join(traceback.format_exception(exc, val, tb))
         try:
-            with open(os.path.join(WORK_DIR, "错误日志.txt"), "a", encoding="utf-8") as fh:
-                fh.write("\n%s\n%s\n" % (datetime.datetime.now().isoformat(), detail))
-        except OSError:
-            pass
-        try:
-            messagebox.showerror("出错了",
-                                 "%s: %s\n\n详情已写入：模型文件\\错误日志.txt" % (exc.__name__, val))
-        except Exception:
-            pass
-
-    app.report_callback_exception = _report
-
-
-def _run_gui():
-    app = Wizard()
-    _install_error_handler(app)
-    app.mainloop()
-    return 0
+            mct_lint.assert_ok(txt)
+            lint = "lint OK"
+        except Exception as exc:                           # noqa: BLE001
+            lint = "lint: %s" % exc
+            bad += 1
+        _print_safe("  PASS  %-8s %-28s %5d 行  %s"
+                    % (code, label, len(txt.splitlines()), lint))
+    _print_safe("自检完成：%d 条流程，%d 条失败" % (len(flows), bad))
+    return 0 if bad == 0 else 1
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(
-        prog="midas_wizard",
-        description="MIDAS Civil NX 建模向导：按步骤填桥梁模型，生成 .mct 命令文件。")
-    ap.add_argument("--version", action="version", version="%(prog)s " + __version__)
-    ap.add_argument("--selftest", action="store_true",
-                    help="不打开界面，跑一遍核心算法自检（返回码 0 = 通过）")
-    ap.add_argument("--emit-mct", metavar="工程.json",
-                    help="不打开界面，把工程 JSON 直接转成 .mct 打印到屏幕")
-    ap.add_argument("--outdir", metavar="目录",
-                    help="配合 --emit-mct：把 .mct 写到指定目录而不是打印")
-    args = ap.parse_args(argv)
-
-    if args.selftest:
-        return selftest()
-    if args.emit_mct:
-        try:
-            with open(args.emit_mct, "r", encoding="utf-8") as fh:
-                model = ensure_model(json.load(fh))
-        except (OSError, ValueError) as exc:
-            safe_print("读不了工程文件：%s" % exc)
-            return 2
-        bad = all_issues(model)
-        if bad:
-            safe_print("模型还有 %d 处问题，先修好再生成：" % len(bad))
-            for msg in bad:
-                safe_print("  - %s" % msg)
-            return 3
-        text = build_mct(model)
-        if args.outdir:
-            os.makedirs(args.outdir, exist_ok=True)
-            stem = safe_name(txt(model["project"].get("name")), "midas-model")
-            dst = os.path.join(args.outdir, stem + ".mct")
-            with open(dst, "w", encoding="gbk", errors="replace", newline="") as fh:
-                fh.write(text)
-            safe_print("已写出 %s" % dst)
-        else:
-            write_text_stdout(text)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv:
+        import argparse
+        ap = argparse.ArgumentParser(
+            prog="midas_wizard.py",
+            description=APP_TITLE + "（不带参数 = 打开图形界面）")
+        ap.add_argument("--version", action="version", version="%(prog)s " + __version__)
+        ap.add_argument("--list-flows", action="store_true", help="列出全部建模流程（代码 + 名称）")
+        ap.add_argument("--emit-mct", metavar="FLOW", help="用该流程的默认模型生成 MCT（默认打印到屏幕）")
+        ap.add_argument("--out", metavar="PATH", help="配合 --emit-mct：写到文件（GBK 编码，可直接导入 MIDAS）")
+        ap.add_argument("--selftest", action="store_true", help="跑内置自检（全部流程生成默认 MCT + 结构检查）")
+        args = ap.parse_args(argv)
+        if args.selftest:
+            return cli_selftest()
+        if args.list_flows:
+            for code, cls in discover_flows().items():
+                _print_safe("%-8s %s" % (code, getattr(cls, "label", "")))
+            return 0
+        if args.emit_mct:
+            inst, build, _rep = flow_module_build_mct(args.emit_mct)
+            if inst is None or build is None:
+                _print_safe("没有这个流程：%s（用 --list-flows 看有哪些）" % args.emit_mct)
+                return 2
+            txt = build(inst.default_model())
+            if args.out:
+                with open(args.out, "w", encoding="gbk", errors="replace", newline="") as fh:
+                    fh.write(txt)
+                _print_safe("已写出：%s（%d 行）" % (args.out, len(txt.splitlines())))
+            else:
+                _print_safe(txt)
+            return 0
+        ap.print_help()
         return 0
-    return _run_gui()
+    app = Wizard()
+    app.mainloop()
+    return 0
 
 
 if __name__ == "__main__":

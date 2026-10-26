@@ -1,0 +1,90 @@
+; ================================================================
+; MIDAS Civil NX — MCT 命令文件（平面刚架 · 自由建模 · 矩阵位移法）
+; 由「MIDAS 建模向导」生成  2026-10-26 22:20:51
+; 项目名称：平面刚架_习题8b_铰接
+; 导入：MIDAS Civil NX → 文件 → 导入 → MCT 命令文件
+; 规模：节点 5 个、梁单元 4 个、节点荷载 2 条、分布荷载 0 条、杆端释放 2 处
+; 坐标：平面刚架建在全局 X-Z 平面（Z 向上）；向导 x → X，向导 y（竖向）→ Z，Y=0
+; 面内自由度：DX/DZ/RY；支座的平面外自由度 DY/RX/RZ 一并约束，避免 2D 出平面奇异
+; 铰接：*FRAME-RLS 释放局部 y 方向弯矩（平面刚架的面内弯曲就是绕局部 y 轴）
+; 材料：E = 32500000 kN/m^2（= kPa），容重 25 kN/m^3
+; ================================================================
+
+*VERSION
+   9.6.5
+
+*UNIT    ; Unit System
+; FORCE, LENGTH, HEAT, TEMPER
+   KN, M, KJ, C
+
+*STRUCTYPE    ; Structure Type
+; iSTYP, iMASS, iSMAS, bMASSOFFSET, bSELFWEIGHT, GRAV, TEMPER, bALIGNBEAM, bALIGNSLAB, bROTRIGID
+   0, 1, 1, NO, NO, 9.806, 0, NO, NO, NO
+
+*NODE    ; Nodes
+; iNO, X, Y, Z
+   1, 0, 0, 10
+   2, 10, 0, 10
+   4, 10, 0, 0
+   5, 0, 0, 0
+   6, 5, 0, 10
+
+*ELEMENT    ; Elements
+; iEL, TYPE, iMAT, iPRO, iN1, iN2, ANGLE, iSUB
+   1, BEAM, 1, 1, 5, 1, 0, 0
+   2, BEAM, 1, 1, 1, 6, 0, 0
+   3, BEAM, 1, 1, 6, 2, 0, 0
+   4, BEAM, 1, 1, 2, 4, 0, 0
+
+*MATERIAL    ; Material
+; iMAT, TYPE, MNAME, SPHEAT, HEATCO, PLAST, TUNIT, bMASS, DAMPRATIO, [DATA1]
+; [DATA1] : 2, ELAST, POISN, THERMAL, DEN, MASS
+   1, CONC , C40, 0, 0, , C, NO, 0.05, 2, 3.2500e+07, 0.2, 1.0e-05, 25, 0
+
+*SECTION    ; Section Properties
+; iSEC, TYPE, SNAME, [OFFSET], bSD, bWE, SHAPE, [DATA1], [DATA2]
+; iSEC, TYPE, SNAME, [OFFSET], bSD, bWE, SHAPE, BLT, D1, ..., D8, iCEL
+;       AREA, ASy, ASz, Ixx, Iyy, Izz
+;       CyP, CyM, CzP, CzM, QyB, QzB, PERI_OUT, PERI_IN, Cy, Cz
+;       Y1, Y2, Y3, Y4, Z1, Z2, Z3, Z4
+   1, DBUSER, 柱梁 0.4×0.6, CC, 0, 0, 0, 0, 0, 0, YES, NO, SB, 2, 0.6, 0.4, 0, 0, 0, 0, 0, 0, 0, 0
+
+*GROUP    ; Group
+; NAME, NODE_LIST, ELEM_LIST, PLANE_TYPE
+   ALL, 1 2 4to6, 1to4, 0
+   COL, 1 2 4 5, 1 4, 0
+   BEAM, 1 2 6, 2 3, 0
+
+*BNDR-GROUP    ; Boundary Group
+; NAME, AUTOTYPE
+   BC, 0
+
+*LOAD-GROUP    ; Load Group
+; NAME
+   CL
+   DL
+
+*STLDCASE    ; Static Load Cases
+; LCNAME, LCTYPE, DESC
+   CL, D, 节点荷载
+   DL, D, 分布荷载
+
+*CONSTRAINT    ; Supports
+; NODE_LIST, CONST(Dx,Dy,Dz,Rx,Ry,Rz), GROUP
+   4 5, 111111, BC
+
+*FRAME-RLS    ; Beam End Release（铰接：1=释放，顺序 Fx,Fy,Fz,Mx,My,Mz）
+; ELEM_LIST, FLAG-i, Fxi, Fyi, Fzi, Mxi, Myi, Mzi        ; 1st Line
+;                    FLAG-j, Fxj, Fyj, Fzj, Mxj, Myj, Mzj, GROUP ; 2nd Line
+   3, 000000, 0, 0, 0, 0, 0, 0
+       000010, 0, 0, 0, 0, 0, 0, BC
+   4, 000010, 0, 0, 0, 0, 0, 0
+       000000, 0, 0, 0, 0, 0, 0, BC
+
+*USE-STLD, CL
+*CONLOAD    ; Nodal Loads（FX, FY, FZ, MX, MY, MZ, GROUP）
+; NODE_LIST, FX, FY, FZ, MX, MY, MZ, GROUP
+   6, 0, 0, -50, 0, 0, 0, CL
+   1, 0, 0, 0, 0, 30, 0, CL
+
+*ENDDATA

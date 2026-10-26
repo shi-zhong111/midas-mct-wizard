@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Cross-platform check: the module must import and run without `winreg`.
+"""Cross-platform check: the program must import and generate a model without `winreg`.
 
 `winreg` only exists on Windows, but CI runs the pure half of this project on
 ubuntu and macos. Importing `midas_wizard` there must not explode just because
-the registry probe cannot run.
+the registry probe cannot run — the "直连 MIDAS" feature is simply unavailable.
 
 `winreg` is a *built-in* C module on Windows, so blocking it needs
 `sys.modules["winreg"] = None` plus a meta-path finder — and it has to happen in
@@ -18,6 +18,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 PROBE = r'''
+import os
 import sys
 
 
@@ -43,16 +44,21 @@ else:
 import importlib.util
 
 path = sys.argv[1]
+sys.path.insert(0, os.path.dirname(os.path.abspath(path)))
 spec = importlib.util.spec_from_file_location("mw", path)
 mw = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mw)             # must not raise
 
 print("import OK", mw.__version__)
 print("find_midas_exe", repr(mw.find_midas_exe()))
-print("midas_status", mw.midas_status())
-print("read_api_conn", mw.read_api_conn())
-print("selftest", mw.selftest(verbose=False))
-print("build_mct", bool(mw.build_mct(mw.default_model())))
+print("midas_status", repr(mw.midas_status()))
+print("read_api_conn", repr(mw.read_api_conn()))
+
+inst, build, _report = mw.flow_module_build_mct("beam")
+model = inst.default_model()
+text = build(model)
+print("beam mct lines", len(text.splitlines()))
+assert "*NODE" in text and "*ENDDATA" in text, "generated MCT looks empty"
 '''
 
 
@@ -66,18 +72,23 @@ class TestRunsWithoutWinreg(unittest.TestCase):
         self.assertEqual(proc.returncode, 0,
                          "module failed without winreg:\n%s\n%s" % (proc.stdout, proc.stderr))
         self.assertIn("import OK", proc.stdout)
-        self.assertIn("find_midas_exe", proc.stdout)
-        self.assertIn("selftest 0", proc.stdout)
-        # No winreg means the API connection info is simply unavailable. This must
-        # be a clean None, not an exception. Do NOT assert the running flag: it
-        # comes from tasklist and depends on whether MIDAS happens to be open, so
-        # pinning it makes the test flap on a developer machine.
+        self.assertIn("beam mct lines", proc.stdout)
+        m = re.search(r"beam mct lines (\d+)", proc.stdout)
+        self.assertIsNotNone(m, "no MCT was generated: %r" % proc.stdout)
+        self.assertGreater(int(m.group(1)), 10)
+
+        # Without winreg the API connection info is simply unavailable. This must be a
+        # clean None, not an exception. Do NOT assert the running flag: it comes from
+        # tasklist and depends on whether MIDAS happens to be open, so pinning it makes
+        # the test flap on a developer machine.
         self.assertIn("read_api_conn None", proc.stdout)
-        m = re.search(r"midas_status \(([^)]*)\)", proc.stdout)
-        self.assertIsNotNone(m, "midas_status did not report a tuple: %r" % proc.stdout)
-        running, info = [p.strip() for p in m.group(1).split(",", 1)]
+        status = re.search(r"midas_status \(([^)]*)\)", proc.stdout)
+        self.assertIsNotNone(status, "midas_status did not report a tuple: %r" % proc.stdout)
+        running, info = [p.strip() for p in status.group(1).split(",", 1)]
         self.assertIn(running, ("True", "False"), "running flag must be a bool")
         self.assertEqual(info, "None", "without winreg there must be no connection info")
+        self.assertIn("find_midas_exe", proc.stdout,
+                      "find_midas_exe must still be callable without winreg")
 
 
 if __name__ == "__main__":
