@@ -42,7 +42,7 @@ except Exception:            # 缺文件时只影响拱桥流程，梁桥照常�
     arch_core = None
 
 APP_TITLE = "MIDAS Civil NX 建模向导"
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 # 便携：程序文件夹就是自己的所在目录，整个文件夹拷到哪都跟着走
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 WORK_DIR = os.path.join(APP_DIR, "模型文件")

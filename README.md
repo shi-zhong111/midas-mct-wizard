@@ -152,6 +152,9 @@ MIDAS 开着 API、也习惯用 AI 助手，那个工具覆盖面更广，建议
 > 命令行窗口里回车，或者运行 `python midas_wizard.py --selftest`。
 > 看到"自检完成，0 条失败"就说明环境没问题。真正的"一键启动"是双击 `launch_wizard.bat`。
 
+> **双击后先闪一下黑窗口是正常的**：黑框只是启动器在找 Python，找到后它自己就退出，
+> 紧接着出现的才是程序窗口。想完全不闪黑框，双击 **`启动建模向导_静默.vbs`** 即可。
+> 如果黑窗闪完没有出现程序窗口，多半是没装 Python —— 双击 `launch_wizard.bat` 按提示装。
 普通 Windows 窗口程序，**不用浏览器、不联网**（只有你主动点"直连 MIDAS"或
 同意安装 Python 时才会联网）。
 
@@ -240,6 +243,7 @@ midas-mct-wizard/
 ├─ flow_cfst2.py / cfst2_core.py    两跨钢管混凝土（湿重两种模拟对比）
 ├─ 使用说明.txt                  给用户看的详细说明（GBK，Windows 记事本直接打开）
 ├─ launch_wizard.bat            Windows 启动器（UTF-8 with BOM + CRLF）
+├─ 启动建模向导_静默.vbs        无黑框启动（可选；双击直接出程序窗口）
 ├─ .gitattributes               强制 .bat/.ps1 用 CRLF（cmd.exe 的硬要求）
 ├─ docs/                        界面截图
 ├─ scripts/
