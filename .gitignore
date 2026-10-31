@@ -2,6 +2,7 @@
 models/
 模型文件/
 pythonw_path.txt
+启动诊断.txt
 错误日志.txt
 *.log
 build_smoke.mct

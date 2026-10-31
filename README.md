@@ -19,6 +19,9 @@
 > 代码质量由 `tests/` 下的单元测试 + `--selftest` 保证，在 Windows / Linux / macOS
 > 三平台 CI 上跑（见 `.github/workflows/ci.yml`）。
 
+> **当前版本：v2.0.3**（2026-10-31）——只修启动，程序功能和生成结果与 2.0.2 相同。
+> 启动报错先看下面的「启动报错怎么办」，或直接用免安装 exe。
+
 ---
 
 ## 三步就能用起来
@@ -139,22 +142,35 @@ MIDAS 开着 API、也习惯用 AI 助手，那个工具覆盖面更广，建议
 
 ### 方式一：双击启动（推荐）
 
-下载仓库后双击 **`launch_wizard.bat`**。它会按顺序找 Python：
+下载仓库后双击 **`launch_wizard.bat`**。启动器会**先验证、再启动**：
 
-1. 之前用本程序装好的 Python
-2. 系统里已有的 Python（`pyw` / `pythonw` / `py`）
-3. 常见安装目录（`%LOCALAPPDATA%\Programs\Python\Python3*`、`C:\Python3*`、
-   `%ProgramFiles%\Python3*`）——**装 Python 时没勾 "Add python.exe to PATH"
-   也能找到**
-4. 都没有 → **询问你**是否下载安装（约 25 MB，只从 python.org 下载，静默装到当前用户目录，不需要管理员）
+1. 读上次记录的 Python（`pythonw_path.txt`），实际试跑验证；
+2. 系统里的 `python.exe` / `pythonw.exe`（跳过 Microsoft Store 的假别名）；
+3. `py -0p` 列出的解释器、注册表登记的安装路径、常见安装目录
+   （`%LOCALAPPDATA%\Programs\Python\Python3*`、`C:\Python3*`、`%ProgramFiles%\Python3*`）；
+4. 每个候选都要**真跑一次** `import tkinter` 且版本 >= 3.9 才算数，**坏候选自动跳过**
+   —— 绝不直接执行可能坏掉的 `pyw`；
+5. 全都不行 → **询问你**是否下载安装（约 25 MB，优先 python.org，失败回退国内镜像，
+   静默装到当前用户目录，不需要管理员权限）。
 
-> **你可以先自检**：装好 Python 后，把整个文件夹里的 `midas_wizard.py` 拖到一个
-> 命令行窗口里回车，或者运行 `python midas_wizard.py --selftest`。
+> **你可以先自检**：装好 Python 后运行 `python midas_wizard.py --selftest`，
 > 看到"自检完成，0 条失败"就说明环境没问题。真正的"一键启动"是双击 `launch_wizard.bat`。
 
 > **双击后先闪一下黑窗口是正常的**：黑框只是启动器在找 Python，找到后它自己就退出，
 > 紧接着出现的才是程序窗口。想完全不闪黑框，双击 **`启动建模向导_静默.vbs`** 即可。
 > 如果黑窗闪完没有出现程序窗口，多半是没装 Python —— 双击 `launch_wizard.bat` 按提示装。
+
+#### 启动报错怎么办（v2.0.3 新增）
+
+如果弹出 **「Python Launcher is sorry to say ... Unable to create process using ...」**，
+这不是本程序报的错，而是 Windows 自带的 `pyw` 启动器指向了一个已经被删除/移动的 Python。
+v2.0.3 的启动器已经不会盲信 `pyw`，但如果你拿到的是旧包/旧启动器，按顺序做：
+
+1. 双击 **`修复启动环境.bat`** —— 重新检测、跳过坏掉的 `pyw`；找不到可用 Python 就自动装一个，
+   全过程写进同目录的 **`启动诊断.txt`**；
+2. 仍然不行 → 用 **免安装 exe**（`MIDAS建模向导.exe`，见「方式三」）—— 双击即用，完全不需要 Python；
+3. 还是不行 → 把 **`启动诊断.txt`** 发回来，里面有 Windows 版本、所有候选 Python 和逐项验证结果。
+
 普通 Windows 窗口程序，**不用浏览器、不联网**（只有你主动点"直连 MIDAS"或
 同意安装 Python 时才会联网）。
 
@@ -167,6 +183,13 @@ python midas_wizard.py --list-flows             :: 列出全部流程（代码 +
 python midas_wizard.py --selftest               :: 不打开界面，全部流程生成默认 MCT + 结构自检
 python midas_wizard.py --emit-mct cfst2 --out 两跨CFST.mct   :: 用某流程的默认模型直接出 .mct
 ```
+
+### 方式三：免安装 exe（完全不需要 Python）
+
+发布页/交付文件夹里还有一个 **`MIDAS建模向导.exe`**（PyInstaller 单文件，约 9.2 MB，
+用 `scripts/build_exe.ps1` 打的）：双击即用，不需要装 Python，也不受系统 Python 启动器故障影响。
+第一次运行会在 exe 旁边自动生成 `模型文件\`、`示例截面\`，之后输入都存在那里。
+**朋友电脑上装 Python 麻烦、或启动器报错修不好时，直接发这个 exe 最省事。**
 
 ### 环境要求
 
@@ -241,13 +264,17 @@ midas-mct-wizard/
 ├─ flow_frame.py / frame_core.py    平面刚架（含矩阵位移法求解器）
 ├─ flow_tbeam.py / tbeam_core.py    预制 T 梁 + 现浇桥面板（施工阶段联合截面）
 ├─ flow_cfst2.py / cfst2_core.py    两跨钢管混凝土（湿重两种模拟对比）
-├─ 使用说明.txt                  给用户看的详细说明（GBK，Windows 记事本直接打开）
-├─ launch_wizard.bat            Windows 启动器（UTF-8 with BOM + CRLF）
-├─ 启动建模向导_静默.vbs        无黑框启动（可选；双击直接出程序窗口）
+├─ 使用说明.txt                  给用户看的详细说明（仓库内 UTF-8，打包进便携版时转 GBK）
+├─ launch_wizard.bat            Windows 启动器（UTF-8 with BOM + CRLF；调 scripts\launch_wizard.ps1）
+├─ 启动建模向导_静默.vbs        无黑框启动（纯 ASCII；同样调 scripts\launch_wizard.ps1）
+├─ 修复启动环境.bat             启动失败时双击：重新检测 + 写 启动诊断.txt（v2.0.3 新增）
 ├─ .gitattributes               强制 .bat/.ps1 用 CRLF（cmd.exe 的硬要求）
 ├─ docs/                        界面截图
 ├─ scripts/
-│   └─ install_python.ps1       首次运行时安装 Python（仅 python.org）
+│   ├─ launch_wizard.ps1        唯一的 Python 检测/验证/启动逻辑（候选必须真跑验证，绝不盲信 pyw）
+│   ├─ install_python.ps1       首次运行时安装 Python（python.org，失败回退国内镜像）
+│   ├─ build_portable.ps1       从仓库自动组装便携包 + 打 zip（v2.0.3 新增）
+│   └─ build_exe.ps1            打 PyInstaller 免安装单文件 exe（v2.0.3 新增）
 ├─ examples/                    示例 .mct（梁桥/刚架/T梁/两跨CFST）+ DXF 图纸
 ├─ tests/
 │   ├─ test_portable.py         跨平台单元测试（纯函数 + 全部流程默认 MCT）

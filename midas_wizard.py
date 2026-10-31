@@ -14,6 +14,7 @@ import datetime
 import importlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tkinter as tk
@@ -26,7 +27,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 from wiz_common import (SHAPES, SHAPE_BY_CODE, CAD_SHAPE, TS_SHAPE, DIM_SLOTS,
-                       is_num, num, numg, txt, aascii, aname,
+                       is_num, num, numg, txt, aascii, aname, app_dir, data_dir,
                        compute_section_props, suggest_unit, unit_advice, loop_area, orient_loop,
                        read_dxf_loops, shape_code_of, _dist, _perimeter, _point_in_poly,
                        _loop_terms, _tess_circle, _tess_arc, _chain_segments,
@@ -42,9 +43,11 @@ except Exception:            # 缺文件时只影响拱桥流程，梁桥照常�
     arch_core = None
 
 APP_TITLE = "MIDAS Civil NX 建模向导"
-__version__ = "2.0.2"
-# 便携：程序文件夹就是自己的所在目录，整个文件夹拷到哪都跟着走
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+__version__ = "2.0.3"
+# 便携：程序文件夹就是自己的所在目录，整个文件夹拷到哪都跟着走。
+# PyInstaller 单文件 exe 运行时 __file__ 在临时解包目录里，所以这里用 wiz_common.app_dir()
+# 拿 exe 真正所在的目录（源码运行时它返回本文件目录，行为与以前完全一致）。
+APP_DIR = app_dir()
 WORK_DIR = os.path.join(APP_DIR, "模型文件")
 # 结果文件夹已取消：MIDAS 的结果统一放进当前工程文件夹（和 .mct 放一起）
 
@@ -92,6 +95,44 @@ def find_midas_exe():
 
 MIDAS_EXE = find_midas_exe()
 SESSION_FILE = os.path.join(WORK_DIR, "_wizard_session.json")
+
+
+# --------------------------------------------------------------------------
+# 冻结运行（PyInstaller 单文件 exe）支持
+# --------------------------------------------------------------------------
+def _setup_frozen_streams():
+    """windowed exe 没有控制台：sys.stdout/stderr 是 None，print 会直接崩。
+
+    指向 os.devnull（反正用户也看不到控制台），这样 --selftest / 日志打印不会报错。
+    """
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name, None) is None:
+            try:
+                setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
+            except OSError:
+                pass
+
+
+def bootstrap_frozen_examples():
+    """冻结运行首次启动：把打包进去的示例数据（模型文件/、示例截面/）拷到 exe 旁边。
+
+    之后所有读写都在 exe 目录（便携：程序放哪，成果就写哪），不再动临时解包目录。
+    已经存在同名目录就跳过（不覆盖用户自己的成果）。源码运行（非 frozen）什么都不做。
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    src_root = data_dir()
+    dst_root = app_dir()
+    for name in ("模型文件", "示例截面"):
+        src = os.path.join(src_root, name)
+        dst = os.path.join(dst_root, name)
+        if not os.path.isdir(src) or os.path.exists(dst):
+            continue
+        try:
+            shutil.copytree(src, dst)
+        except OSError as exc:
+            _print_safe("示例数据复制失败：%s（%s）" % (dst, exc))
+
 
 # --------------------------------------------------------------------------
 # 常量表
@@ -1274,6 +1315,10 @@ class Wizard(tk.Tk):
 
         self.load_session()
         self.render()
+        if getattr(sys, "frozen", False):
+            # 单文件 exe 首次启动就把默认会话落盘，让 exe 旁边立刻有 模型文件\_wizard_session.json
+            #（源码运行不写，保持原来的行为不变）。
+            self.save_session()
 
     # ---------------- 样式 ----------------
     def _init_style(self):
@@ -4081,12 +4126,16 @@ def flow_module_build_mct(code):
 
 
 def _print_safe(text):
-    """控制台编码兜底（Windows GBK 控制台上打印不报错）。"""
+    """控制台编码兜底（Windows GBK 控制台上打印不报错；windowed exe 没有 stdout 时静默跳过）。"""
+    if sys.stdout is None:          # PyInstaller --windowed：没有控制台可写
+        return
     try:
         print(text)
     except UnicodeEncodeError:
         enc = getattr(sys.stdout, "encoding", None) or "gbk"
         print(text.encode(enc, "replace").decode(enc, "replace"))
+    except (AttributeError, OSError, ValueError):
+        pass
 
 
 def cli_selftest():
@@ -4127,6 +4176,10 @@ def cli_selftest():
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if getattr(sys, "frozen", False):
+        # 单文件 exe：先让打印有个去处（windowed 没有控制台），再把打包的示例放到 exe 旁边。
+        _setup_frozen_streams()
+        bootstrap_frozen_examples()
     if argv:
         import argparse
         ap = argparse.ArgumentParser(

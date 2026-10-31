@@ -10,6 +10,35 @@
 改完必须跑 C:/Midas/wiz/tests/run_checks.py 回归（3 套样例成果必须逐字节不变）。
 """
 import math
+import os
+import sys
+
+
+def app_dir():
+    """程序所在目录 —— 写文件（模型文件/、日志、会话）都写到这里。
+
+    * 正常源码运行（python midas_wizard.py）：本文件所在目录，和以前完全一致。
+    * PyInstaller 冻结运行（--onefile exe）：__file__ 在临时解包目录 sys._MEIPASS 里，
+      程序真正的位置是 exe 自己所在目录（sys.executable），成果要写在 exe 旁边。
+    """
+    if getattr(sys, "frozen", False):
+        exe = getattr(sys, "executable", "") or ""
+        if exe:
+            return os.path.dirname(os.path.abspath(exe))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def data_dir():
+    """只读资源目录 —— 随程序打包进去的示例数据（模型文件/、示例截面/）从这里读。
+
+    frozen 且存在解包目录（sys._MEIPASS）时就是解包目录；其余情况同 app_dir()，
+    所以源码运行时和以前完全等价（示例就在程序目录里）。
+    """
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", "") or ""
+        if meipass:
+            return os.path.abspath(meipass)
+    return os.path.dirname(os.path.abspath(__file__))
 
 
 SHAPES = [

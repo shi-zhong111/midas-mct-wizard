@@ -31,8 +31,8 @@ STEP_IDS = list(cc.STEP_IDS)
 STEP_TITLES = list(cc.STEP_TITLES)
 STEP_HINTS = list(cc.STEP_HINTS)
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-WORK_DIR = os.path.join(_HERE, "模型文件")
+# 成果写到的「模型文件」目录：跟程序（exe / 源码）放一起；frozen 时不是临时解包目录。
+WORK_DIR = os.path.join(wc.app_dir(), "模型文件")
 
 
 # ---- 引擎的薄包装：测试 / 主程序也可以直接 from flow_cable import build_mct ----

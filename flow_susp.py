@@ -17,6 +17,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import sect_ui
 import susp_core as sc
+import wiz_common as wc
 from flow_api import FlowBase
 
 CODE = sc.CODE
@@ -552,7 +553,7 @@ class Flow(FlowBase):
         try:
             return self.out_dir()
         except Exception:                                       # noqa: BLE001
-            return os.path.join(os.path.dirname(os.path.abspath(__file__)), "模型文件", CODE)
+            return os.path.join(wc.app_dir(), "模型文件", CODE)
 
     def _prefix(self):
         s = self._s()

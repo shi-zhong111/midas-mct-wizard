@@ -302,9 +302,8 @@ class Flow(FlowBase):
 
     # ---------------- 第 5 步：生成成果 ----------------
     def _app_dir(self):
-        mod = sys.modules.get(self.wiz.__class__.__module__)
-        path = getattr(mod, "__file__", "") or ""
-        return os.path.dirname(os.path.abspath(path)) if path else os.getcwd()
+        """程序（exe / 源码）所在目录；frozen 运行时不能落到临时解包目录里。"""
+        return wc.app_dir()
 
     def _default_outdir(self):
         return os.path.join(self._app_dir(), "模型文件", "施工阶段梁桥")
