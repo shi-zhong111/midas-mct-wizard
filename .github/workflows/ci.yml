@@ -15,6 +15,17 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.9", "3.12"]
+        # 2026-11：ubuntu-latest 已滚到 Ubuntu 26.04，而 actions/python-versions 没有
+        # 为 26.04 构建 Python 3.9（3.9 已于 2025-10 停止维护），于是 ubuntu+3.9 这一格
+        # 在 "Set up Python" 就报：
+        #   Error: The version '3.9' with architecture 'x64' was not found for Ubuntu 26.04.
+        # 把这一格固定到仍有 3.9 构建的 ubuntu-22.04，其余组合保持 ubuntu-latest 不变。
+        exclude:
+          - os: ubuntu-latest
+            python-version: "3.9"
+        include:
+          - os: ubuntu-22.04
+            python-version: "3.9"
 
     steps:
       # v5 / v6 run on Node.js 24. The older v4 / v5 releases target Node.js 20,
