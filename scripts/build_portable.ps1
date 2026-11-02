@@ -3,11 +3,11 @@
     从仓库自动组装「MIDAS Civil NX 建模向导」便携包，并打成 zip。
 
 .DESCRIPTION
-    v2.0.3 交付用打包脚本（幂等：每次重跑先清空输出目录和旧 zip）。
+    v2.1.x 交付用打包脚本（幂等：每次重跑先清空输出目录和旧 zip）。
 
     从仓库（默认本脚本的上级目录）自动组装：
       · 程序 .py          —— 仓库根目录全部 *.py
-      · 模型文件\         —— 15 套示例（仓库里该目录被 .gitignore 排除，可能为空，
+      · 模型文件\         —— 16 套示例（仓库里该目录被 .gitignore 排除，可能为空，
                              此时自动回退到 -ReferencePackage 指向的上一版便携包）
       · 示例截面\         —— 同上
       · 界面截图\         —— 照 v2.0.2 包里的 5 个文件名，从仓库 docs\*.png 复制
@@ -28,7 +28,7 @@
     便携包输出到哪个目录下。默认 F:\新建文件夹。
 
 .PARAMETER Version
-    版本号，默认 2.0.3。输出目录名 = MIDAS建模向导_便携版_v<版本>。
+    版本号，默认 2.1.0。输出目录名 = MIDAS建模向导_便携版_v<版本>。
 
 .PARAMETER ReferencePackage
     仓库里 模型文件\ / 示例截面\ 为空时，从哪个上一版便携包里取（只读复制，不修改它）。
@@ -57,7 +57,7 @@ param(
     [string]$RepoRoot = '',
     [string]$OutRoot = 'F:\新建文件夹',
     [string]$PackageName = 'MIDAS建模向导_便携版',
-    [string]$Version = '2.0.3',
+    [string]$Version = '2.1.0',
     [string]$ReferencePackage = 'F:\新建文件夹\MIDAS建模向导_便携版_v2.0.2',
     [string]$ExamplesFrom = '',
     [string]$SectionsFrom = '',
@@ -200,7 +200,7 @@ function Test-TextFileShape([string]$path, [string]$what, [switch]$RequireBom, [
 
 # ---------------------------------------------------------------- 内置 README 模板
 $README_TEMPLATE = @'
-MIDAS Civil NX 建模向导 · 便携版 v2.0.3
+MIDAS Civil NX 建模向导 · 便携版 v__VERSION__
 =========================================================
 
 一句话：**不用学 MIDAS，按步骤填表就能生成桥梁模型的 .mct 文件**，
@@ -237,7 +237,7 @@ MIDAS Civil NX 建模向导 · 便携版 v2.0.3
 > 找到后它自己就退出了，紧接着出现的才是程序本体。
 
 --------------------------------------------------------
-二、内置 9 条建模流程（右上角「流程」下拉切换）
+二、内置 10 条建模流程（右上角「流程」下拉切换）
 --------------------------------------------------------
 1. 梁桥（一次成桥）—— 8 步，支点/单元/材料/截面(DXF)/支承/工况/荷载；
    可选移动荷载·模态·屈曲（第 06/07 讲）
@@ -250,7 +250,9 @@ MIDAS Civil NX 建模向导 · 便携版 v2.0.3
    不打开 MIDAS 也能直接算杆端力、支反力；含习题 8(a)/(b) 预设
 8. 预制 T 梁 + 现浇桥面板 —— 20 m T 梁先架后浇，施工阶段联合截面，
    自动给内力分配/应力、与一次成型对比
-9. 两跨钢管混凝土（湿重对比）—— 一次生成两套 MCT，对比两种湿重模拟方式
+9. 装配式预应力混凝土简支 T 梁桥（整桥 · 钢束 · 全流程）—— 30 m、5 片 T 梁梁格 +
+   5 道横隔板 + 后张钢束（*TDN-*）+ 自重/二期恒载；可直连 MIDAS 导入/分析/取结果/截图
+10. 两跨钢管混凝土（湿重对比）—— 一次生成两套 MCT，对比两种湿重模拟方式
 
 每条流程都是「填数值 → 立刻校验 → 下一步」，填错了底部红字会拦住；
 截面页面都支持参数化截面和导入 CAD（DXF）自定义截面。
@@ -268,12 +270,13 @@ MIDAS Civil NX 里：文件 → 导入 → MIDAS/Civil MCT 文件 → 选 .mct�
 --------------------------------------------------------
 四、示例工程（模型文件\ 文件夹）
 --------------------------------------------------------
-程序目录\模型文件\ 里每个示例一个文件夹（.mct + 数据表 + 导入说明），共 15 个，例如：
+程序目录\模型文件\ 里每个示例一个文件夹（.mct + 数据表 + 导入说明），共 16 个，例如：
   示例_平面刚架_习题8         示例_预制T梁20m_联合截面
   示例_两跨CFST_湿重对比      示例_斜拉桥220m_鱼骨刺成桥
   示例_悬索桥                 示例_连续刚构60+100+60
   示例_简支变连续2x20         示例_钢管混凝土拱50m
-  示例_拱桥100m_模态与稳定    示例_简支梁10m_移动荷载与模态 …
+  示例_拱桥100m_模态与稳定    示例_简支梁10m_移动荷载与模态
+  示例_30m装配式T梁桥_整桥    …
 「示例截面\」里是 DXF 自定义截面的图纸示例。
 
 --------------------------------------------------------
@@ -295,8 +298,8 @@ A：这不是本程序自己的报错，是你电脑上 Windows 自带的 pyw �
 
 Q：怎么知道程序版本 / 能不能用？
 A：在文件夹里打开命令行运行
-     python midas_wizard.py --version     （看到 2.0.3）
-     python midas_wizard.py --selftest    （9 条流程自检，应该 0 失败）
+     python midas_wizard.py --version     （看到 v__VERSION__）
+     python midas_wizard.py --selftest    （10 条流程自检，应该 0 失败）
 
 Q：打开了两个程序窗口？
 A：双击了两次。程序没有单实例限制，关掉多余那个即可，数据以最后保存的为准。
@@ -311,14 +314,16 @@ A：自定义截面的「图纸单位」选错了（mm 当 m 会差 1000 倍）�
 --------------------------------------------------------
 六、版本与来源
 --------------------------------------------------------
-· 版本：2.0.3（2026-10-31）
-· 本次更新只修启动（启动器先验证再启动 + 新增修复启动环境.bat/启动诊断.txt），
-  程序功能和生成的模型与 2.0.2 完全一致。
+· 版本：v__VERSION__（2026-11-02）
+· 本版新增第 10 条流程「装配式预应力混凝土简支 T 梁桥（整桥 · 钢束 · 全流程）」，
+  并修好「施工阶段梁桥」「预制 T 梁」两处界面示意图不随参数刷新的问题；
+  完整更新内容见仓库 CHANGELOG.md。
 · 项目主页（开源，MIT 许可）：https://github.com/shi-zhong111/midas-mct-wizard
 · 非官方工具：与 MIDAS IT 无隶属关系；生成的模型导入 MIDAS 后请自行核对
   支点、单元、材料、截面、支承、荷载，工程结果以 MIDAS 自己算的为准。
-· 本机未做 MIDAS 真机导入验证的新流程（移动荷载/模态/屈曲、平面刚架端部释放、
-  两跨 CFST 湿重对比）属于首次实测项，导入报错请按上面的行号方法反馈。
+· 「装配式预应力 T 梁桥（整桥）」已在 MIDAS CIVIL NX 上实测导入 + 分析 + 取回结果；
+  其余流程的 MCT 写法均照 MIDAS 自己导出的样本逐字段核对，首次导入如报错
+  请按上面的行号方法反馈。
 '@
 
 # ---------------------------------------------------------------- 开跑
@@ -499,11 +504,12 @@ if (Test-Path -LiteralPath $srcManual -PathType Leaf) {
 } else {
     Add-BuildError ('缺少 使用说明.txt：' + $srcManual)
 }
-Write-Utf8BomFile (Join-Path $outDir 'README_使用前必读.txt') $README_TEMPLATE 'UTF-8 BOM'
-$versionText = '2.0.3' + "`r`n" +
+$readmeText = $README_TEMPLATE.Replace('__VERSION__', $Version)
+Write-Utf8BomFile (Join-Path $outDir 'README_使用前必读.txt') $readmeText 'UTF-8 BOM'
+$versionText = $Version + "`r`n" +
     'MIDAS建模向导 便携版' + "`r`n" +
     '打包时间：' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + "`r`n" +
-    '说明：本次更新只修启动；程序功能与 2.0.2 相同。' + "`r`n"
+    '说明：更新内容见程序目录 README_使用前必读.txt 与仓库 CHANGELOG.md。' + "`r`n"
 Write-Utf8BomFile (Join-Path $outDir 'VERSION.txt') $versionText 'UTF-8 BOM'
 
 # ---- 7) 清理只读属性 + 自检 --------------------------------------------
@@ -578,7 +584,7 @@ if (Test-Path -LiteralPath $readmeOut) {
     }
     $readmeText = [Text.Encoding]::UTF8.GetString($rb)
     if ($readmeText.Contains($replacementChar)) { Add-BuildError 'README_使用前必读.txt 按 UTF-8 解码出现替换字符' }
-    if (-not $readmeText.Contains('v2.0.3')) { Add-BuildError 'README_使用前必读.txt 里没有版本号 v2.0.3' }
+    if (-not $readmeText.Contains('v' + $Version)) { Add-BuildError ('README_使用前必读.txt 里没有版本号 v' + $Version) }
     Write-Item '文档编码检查通过：README_使用前必读.txt（UTF-8 BOM，中文正常）'
 }
 $versionOut = Join-Path $outDir 'VERSION.txt'

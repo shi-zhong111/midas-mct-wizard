@@ -9,7 +9,7 @@
 # 关键点：
 #   * 用 Python 3.10 打（程序按 3.9+ 语法写，别用 3.14 的新特性）；
 #   * 程序纯标准库 + tkinter，没有第三方运行依赖，PyInstaller 自己会带 tcl/tk；
-#   * 示例数据（模型文件\ 15 套示例 + 示例截面\ 的 DXF）用 --add-data 打进 exe，
+#   * 示例数据（模型文件\ 16 套示例 + 示例截面\ 的 DXF）用 --add-data 打进 exe，
 #     首次运行由 midas_wizard.bootstrap_frozen_examples() 复制到 exe 旁边；
 #   * 冻结运行时的「程序目录」= exe 所在目录（wiz_common.app_dir()），所有成果/会话都写那里，
 #     不会写进临时解包目录 _MEIPASS。
@@ -50,11 +50,11 @@ foreach ($name in @("midas_wizard.py", "wiz_common.py")) {
 $modelsSrc = Join-Path $root "模型文件"
 $sectSrc = Join-Path $root "示例截面"
 if (-not (Test-Path $modelsSrc)) {
-    throw "找不到示例数据目录：$modelsSrc（PyInstaller 没东西可打，请先放好 15 套示例）"
+    throw "找不到示例数据目录：$modelsSrc（PyInstaller 没东西可打，请先放好 16 套示例）"
 }
 $modelDirs = @(Get-ChildItem $modelsSrc -Directory)
 if ($modelDirs.Count -lt 1) {
-    throw "$modelsSrc 里没有示例子目录（预期 15 套）；没有示例也能打包，但请先确认这是不是想要的"
+    throw "$modelsSrc 里没有示例子目录（预期 16 套）；没有示例也能打包，但请先确认这是不是想要的"
 }
 if (-not (Test-Path $sectSrc)) {
     throw "找不到示例截面目录：$sectSrc"
