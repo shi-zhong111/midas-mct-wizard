@@ -382,12 +382,13 @@ class Flow(FlowBase):
 
         box = self.card("施工阶段表（默认：架设主梁 → 浇板（湿重）→ 板硬化 → 二期恒载）")
         g = self.table(box, ["序号", "阶段名", "持续天数 (d)", "这一步做什么", ""])
+        _st_entries = []
         for i, st in enumerate(stages):
             ttk.Label(g, text=str(i + 1)).grid(row=i + 1, column=0, sticky="w",
                                                padx=(0, 12), pady=3)
-            self.entry(g, self.svar(st, "name", st.get("name")), width=10, row=i + 1, col=1)
-            self.entry(g, self.svar(st, "days", st.get("days")), width=8, row=i + 1, col=2)
-            self.entry(g, self.svar(st, "desc", st.get("desc")), width=44, row=i + 1, col=3)
+            _st_entries.append(self.entry(g, self.svar(st, "name", st.get("name")), width=10, row=i + 1, col=1))
+            _st_entries.append(self.entry(g, self.svar(st, "days", st.get("days")), width=8, row=i + 1, col=2))
+            _st_entries.append(self.entry(g, self.svar(st, "desc", st.get("desc")), width=44, row=i + 1, col=3))
             ttk.Button(g, text="删除", width=6,
                        command=lambda k=i: self._del_stage(k)).grid(row=i + 1, column=4,
                                                                     sticky="w", pady=3)
@@ -441,6 +442,9 @@ class Flow(FlowBase):
                        highlightbackground="#cccccc")
         cv.pack(fill="x")
         cv.bind("<Configure>", lambda _e: _draw_stages(cv, m))
+        for _w in _st_entries:      # 改阶段名/天数时实时重画阶段示意图
+            if _w is not None:
+                _w.bind("<KeyRelease>", lambda _e, _c=cv: _draw_stages(_c, m), add="+")
         _draw_stages(cv, m)
 
     def _add_stage(self):

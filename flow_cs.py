@@ -167,6 +167,11 @@ class Flow(FlowBase):
                                 "张拉连续束后再撤掉、换永久支座，这就是「体系转换」。",
                       style="Opt.TLabel", wraplength=760, justify="left").grid(
                 row=3, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        # 改跨径/节段数时实时重画桥型示意图（以前只有 <Configure> 时才画）
+        for _w in box.winfo_children():
+            if isinstance(_w, ttk.Entry):
+                _w.bind("<KeyRelease>", lambda _e, _c=c: self._draw(_c), add="+")
+        self._draw(c)
         self._label_bottom("提示：本流程按 X-Z 平面建模（*STRUCTYPE 写 0，用支承把平面外自由度全部约束），"
                            "顶部「结构类型」下拉框对这里不起作用。")
 

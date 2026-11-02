@@ -43,7 +43,7 @@ except Exception:            # 缺文件时只影响拱桥流程，梁桥照常�
     arch_core = None
 
 APP_TITLE = "MIDAS Civil NX 建模向导"
-__version__ = "2.0.3"
+__version__ = "2.1.0"
 # 便携：程序文件夹就是自己的所在目录，整个文件夹拷到哪都跟着走。
 # PyInstaller 单文件 exe 运行时 __file__ 在临时解包目录里，所以这里用 wiz_common.app_dir()
 # 拿 exe 真正所在的目录（源码运行时它返回本文件目录，行为与以前完全一致）。
@@ -1266,6 +1266,7 @@ FLOW_PLUGIN_MODULES = [
     ("cfst", "flow_cfst"),        # 钢管混凝土拱
     ("frame", "flow_frame"),      # 平面刚架（自由建模 + 矩阵位移法）
     ("tbeam", "flow_tbeam"),      # 预制 T 梁 + 现浇桥面板（施工阶段联合截面）
+    ("psc_tbeam", "flow_psc_tbeam"),  # 装配式预应力混凝土简支T梁桥（整桥·钢束·全流程）
     ("cfst2", "flow_cfst2"),      # 两跨钢管混凝土（施工顺序 · 湿重对比）
 ]
 FLOW_LOAD_ERRORS = {}

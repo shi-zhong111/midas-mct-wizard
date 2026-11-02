@@ -5,7 +5,7 @@
     python midas_wizard.py --selftest      # 同一批默认模型的轻量版
 
 覆盖：
-  * 版本号、9 条流程都能被发现、插件加载没有错误；
+  * 版本号、10 条流程都能被发现、插件加载没有错误；
   * 每条流程的默认模型都能生成 MCT，含必需命令块，过 mct_lint 结构检查；
   * 关键数值：预制 T 梁联合截面内力/应力、两跨钢管混凝土两种湿重方式的差异；
   * 截面特性纯函数（矩形截面的 A / Iyy / Izz 对解析解）；
@@ -24,7 +24,8 @@ if ROOT not in sys.path:
 import midas_wizard as mw          # noqa: E402
 import mct_lint                     # noqa: E402
 
-FLOW_CODES = ["beam", "arch", "cable", "susp", "cs", "cfst", "frame", "tbeam", "cfst2"]
+FLOW_CODES = ["beam", "arch", "cable", "susp", "cs", "cfst", "frame", "tbeam", "cfst2",
+              "psc_tbeam"]
 
 # 每条流程默认 MCT 里必须有这些命令块
 REQUIRED_BLOCKS = {
@@ -37,6 +38,8 @@ REQUIRED_BLOCKS = {
     "frame": ["*NODE", "*ELEMENT", "*CONSTRAINT", "*ENDDATA"],
     "tbeam": ["*NODE", "*ELEMENT", "*STAGE", "*CPOSECT4CS", "*ENDDATA"],
     "cfst2": ["*NODE", "*ELEMENT", "*STAGE", "*CPOSECT4CS", "*ENDDATA"],
+    "psc_tbeam": ["*NODE", "*ELEMENT", "*SECT-PSCVALUE", "*TDN-PROPERTY",
+                  "*TDN-PRESTRESS", "*ENDDATA"],
 }
 
 
@@ -76,7 +79,7 @@ class TestVersionAndFlows(unittest.TestCase):
     def test_version(self):
         self.assertRegex(mw.__version__, r"^\d+\.\d+\.\d+$")
 
-    def test_all_nine_flows_discovered(self):
+    def test_all_flows_discovered(self):
         flows = mw.discover_flows()
         self.assertEqual(sorted(flows), sorted(FLOW_CODES))
         self.assertEqual(mw.FLOW_LOAD_ERRORS, {}, "有流程插件加载失败：%s" % mw.FLOW_LOAD_ERRORS)
